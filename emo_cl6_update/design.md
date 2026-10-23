@@ -57,10 +57,29 @@ consent and provenance data (not deferred to later).
 ```
 
 - **What a source sends depends on whether the person already has settings:**
-  - **New registration** (`eventType: account_registration`): only what the user
-    selected, all `opt_in`. Nothing exists yet to overwrite, so unselected items are
-    simply "not chosen" — no implicit opt-outs. Selecting a channel with all its topics
-    sends one item per topic; selecting one topic on one channel sends exactly one item.
+  - **New registration**: only what the user chose, all `opt_in` / `granted`. Nothing
+    exists yet to overwrite, so anything not chosen is simply "not chosen" — no implicit
+    opt-outs. A form with granular choices sends one item per chosen topic × channel.
+  - **Event registration page (EMO)** — the real page has **no granular choices**:
+    registering *is* the agreement ("By registering, you will also receive marketing
+    communications from Vanguard…"), plus a privacy/cookie policy confirmation tick. So
+    EMO sends a **consent-only** event: `eventType: event_registration`,
+    `sourceSystem: emo`, `consent[]` with `marketing_email` and `event_communications`
+    (*assumed* — see Open items), each `status: granted`,
+    `captureMethod: implied_by_registration`, and the agreed policy in
+    `provenance.policyVersion`. The page's profile fields (name, job role, firm, firm size)
+    are for EMO's other processes and are **not** sent to CPMS. `sourceSystem: emo` records
+    where the consent came from (provenance / collection point) — the event format is the
+    same standard `source_event` either way.
+  - **New adviser account (CL6)** — Vanguard 365 "About you" page: name, company, company type,
+    optional FCA number; creating the account *is* the marketing agreement ("By creating an
+    account… you will also receive marketing communications from Vanguard…"), plus a
+    required tick accepting the privacy policy, IP agreement and terms and conditions. Not
+    tied to any event. Sends a **consent-only** event: `eventType: account_registration`,
+    `sourceSystem: cl6`, `consent[]` with `marketing_email` and
+    `account_servicing` (*assumed* — accepting the T&Cs is the account contract), each
+    `status: granted`, `captureMethod: implied_by_account_creation`. Profile fields are not
+    sent to CPMS.
   - **Update** (`eventType: preference_update`, not built yet): load the person's current
     settings from OneTrust first, then send only what **changed** — `opt_in` for things
     switched on, explicit `opt_out` for things switched off. Needs a OneTrust read path
@@ -586,8 +605,8 @@ see it — so we can, and should, treat it as one.
   token. Each collection point is scoped to only the purposes that service collects.
   *(API-type is required anyway: `TransactionType` and `interactionDate` are only
   supported on API collection points.)*
-- **Which collection point a receipt uses is decided by `sourceSystem`** (e.g. `cvent`,
-  `kaltura` → `emo`), from a small mapping in config — not hardcoded.
+- **Which collection point a receipt uses is decided by `sourceSystem`** (e.g. `emo` →
+  the "Vanguard EMO" collection point, `cl6` → "Vanguard CL6"), from a small mapping in config — not hardcoded.
 - **Turn on signed-JWT verification** on every CPMS-used collection point (if the OneTrust
   plan offers it). Then a leaked collection point token alone is useless: OneTrust also
   requires a JWT signed by CPMS's private key, with `sub` = the receipt's email.
@@ -612,9 +631,9 @@ scoped to e.g. `marketing_email` and `event_communications`).
 
 1. **Capture.** Jane registers for a webinar in Cvent and ticks "newsletter by email". EMO
    picks up the registration and sends CPMS a `source_event` with
-   `sourceSystem: "cvent"`. *EMO never talks to OneTrust and never holds a OneTrust token.*
+   `sourceSystem: "emo"`. *EMO never talks to OneTrust and never holds a OneTrust token.*
 2. **Steps 1–3** validate, transform and stale-check it as usual.
-3. **Step 4** builds the receipt. From the mapping, `cvent` → collection point `emo`, so
+3. **Step 4** builds the receipt. From the mapping, `sourceSystem: emo` → collection point `emo`, so
    the outbound message is tagged `collectionPoint: "emo"`, and the body carries
    `"requestInformation": "{{COLLECTION_POINT_JWT}}"` — no real token.
 4. **Steps 5–7** queue it and record it. Anyone looking at the queue, the S3 success
@@ -797,6 +816,24 @@ networking and extra storage before the flow is proven.
   authentication of the person (login / magic link — OneTrust link tokens), so nobody
   can view or change someone else's preferences by typing their email. Likely its own
   flow folder.
+- **Which purposes does an EMO event registration grant?** Assumed `marketing_email`
+  (the page's marketing statement) + `event_communications` (communications about the
+  event itself). Confirm, and confirm the **legal basis**: marketing consent that comes
+  bundled with registration may not count as freely-given *consent* under UK GDPR; for
+  professional advisers at firms Vanguard may rely on **legitimate interest** instead.
+  The taxonomy's `legalBasis` must say whichever applies — it's what OneTrust records.
+  Privacy/legal decision.
+- **Which purposes does an account registration grant, and from which source?** Assumed
+  `marketing_email` + `account_servicing` (legal basis `contract`, from accepting the T&Cs
+  and IP agreement), with `sourceSystem: cl6`. Same legal-basis question as
+  above for the bundled marketing. Also: the tick covers **three** documents (privacy
+  policy, IP agreement, T&Cs) but `provenance.policyVersion` holds one version — decide
+  whether to record all three versions.
+- **Record which event someone registered for?** The `source_event` has no field for the
+  specific event/webinar. Add an optional one if OneTrust or the records should show
+  "registered for Autumn Budget 2026 briefing".
+- **Policy version** — the registration page doesn't show one; EMO must supply the agreed
+  privacy-policy version for `provenance.policyVersion`.
 - **Topic chosen at registration → also consent to its parent purpose?** Today a
   registration's topic choices are sent under `TransactionType: CHANGE_PREFERENCES`
   (records the preference only). If ticking "newsletter by email" at sign-up should also

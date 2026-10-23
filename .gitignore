@@ -13,3 +13,6 @@ __pycache__/
 
 # Generated diagram previews
 *.preview.html
+
+# Node
+node_modules/

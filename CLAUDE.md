@@ -18,7 +18,8 @@ a different flow. Each flow folder is internally structured the same way:
   building_blocks.md  - infrastructure parts list, for this flow
   schemas/             - JSON Schema contracts used by this flow
   diagrams/            - .drawio diagrams for this flow
-  web/                 - (optional) local test tools for this flow, e.g. a form that sends events
+  web/                 - (optional) local test app for this flow (Node.js): e.g. a page that
+                         sends events and shows what CPMS generated (`npm install && npm start`)
   lambdas/<name>/      - Lambda code (handler.py + optional requirements.txt), one folder per function
   deploy/              - boto3 scripts that create/update this flow's AWS resources and
                          upload schemas/taxonomy (idempotent — safe to re-run)

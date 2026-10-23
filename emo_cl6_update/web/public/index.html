@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPMS Source Flows</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">C</span><span>CPMS<span class="brand-sub">source flows</span></span></div>
+    <nav class="side-nav" aria-label="Flows">
+      <span class="side-label">Registration flows</span>
+      <a href="#/event" class="side-link" data-flow="event">
+        <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+        <span>Event registration<small>EMO · webinar sign-up</small></span>
+      </a>
+      <a href="#/account" class="side-link" data-flow="account">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>
+        <span>Account registration<small>CL6 · Vanguard 365 adviser account</small></span>
+      </a>
+    </nav>
+    <div class="side-foot"><span class="env-pill">Test harness · dev</span></div>
+  </aside>
+
+  <div class="main">
+    <!-- Event flow header -->
+    <section class="hero" data-flow="event">
+      <div class="hero-inner">
+        <span class="eyebrow" id="ev-format">Webinar</span>
+        <h1 id="ev-title">Loading…</h1>
+        <div class="facts">
+          <span class="fact"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg><span id="ev-date"></span></span>
+          <span class="fact"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span id="ev-time"></span></span>
+          <span class="fact"><svg viewBox="0 0 24 24"><path d="M12 3 2 8l10 5 10-5-10-5z"/><path d="M6 10.5V16c3 2 9 2 12 0v-5.5"/></svg><span id="ev-cpd"></span></span>
+        </div>
+        <ul class="presenters" id="ev-presenters"></ul>
+      </div>
+    </section>
+
+    <!-- Account flow header -->
+    <section class="hero" data-flow="account" hidden>
+      <div class="hero-inner">
+        <span class="eyebrow">Professional investors</span>
+        <h1>Vanguard 365</h1>
+        <p class="hero-lead">Create your adviser account to access premium content and tools, manage your CPD records and register for events with one login.</p>
+      </div>
+    </section>
+
+    <main class="wrap">
+      <nav class="tabs" role="tablist" aria-label="Views">
+        <button class="tab active" role="tab" data-tab="form" type="button" id="tab-form">Register</button>
+        <button class="tab" role="tab" data-tab="sent" type="button">Event sent to CPMS</button>
+        <button class="tab" role="tab" data-tab="onetrust" type="button">OneTrust payload <span class="badge" id="ot-badge" hidden></span></button>
+      </nav>
+
+      <section class="panel" id="panel-form" role="tabpanel">
+        <!-- ===== Event registration (EMO) ===== -->
+        <div class="card form-card" data-flow="event">
+          <div class="form-head">
+            <h2 id="ev-form-title">Register to the webinar</h2>
+            <ol class="stepper"><li class="active" data-step="1"><span>1</span>Email</li><li data-step="2"><span>2</span>Your details</li></ol>
+          </div>
+          <form class="step" data-step="1" novalidate>
+            <label class="field"><span class="label">Email address</span>
+              <input name="email" type="email" autocomplete="email" placeholder="you@yourfirm.com" required><span class="error"></span></label>
+            <div class="actions"><button class="btn primary" type="submit">Continue</button></div>
+          </form>
+          <form class="step" data-step="2" novalidate hidden>
+            <button class="back" type="button">← Back</button>
+            <p class="step-email">Registering <b data-echo></b></p>
+            <div class="grid">
+              <label class="field"><span class="label">First name</span><input name="firstName" autocomplete="given-name" required><span class="error"></span></label>
+              <label class="field"><span class="label">Last name</span><input name="lastName" autocomplete="family-name" required><span class="error"></span></label>
+              <label class="field"><span class="label">Job role</span><input name="jobRole" autocomplete="organization-title" required><span class="error"></span></label>
+              <label class="field"><span class="label">Firm name</span><input name="firmName" autocomplete="organization" required><span class="error"></span></label>
+            </div>
+            <fieldset class="field" data-group="firmSize" data-required>
+              <legend class="label">Firm size (assets under management)</legend>
+              <div class="chips" id="firm-sizes"></div><span class="error"></span>
+            </fieldset>
+            <div class="notice">
+              <p>By registering, you will also receive marketing communications from Vanguard, including our latest market, product and service updates. You can unsubscribe at any time via the link in each communication. Further information on the use and storage of your personal data can be found in our <a href="#" data-noop>privacy policy</a>.</p>
+              <p>When you register, we will set the cookies described in our <a href="#" data-noop>cookie policy</a> on your device to personalise and improve the site experience.</p>
+            </div>
+            <label class="check"><input type="checkbox" name="confirm" required><span class="box" aria-hidden="true"></span>
+              <span><b>Confirmation.</b> Tick to confirm you have read and agree with the privacy policy and cookie policy.</span></label>
+            <span class="error" data-error="confirm"></span>
+            <div class="actions"><span class="hint">Profile fields stay with EMO — only the consent goes to CPMS.</span><button class="btn primary" type="submit">Register now</button></div>
+          </form>
+        </div>
+
+        <!-- ===== Account registration (CL6) ===== -->
+        <div class="card form-card" data-flow="account" hidden>
+          <div class="form-head">
+            <h2>About you</h2>
+            <ol class="stepper"><li class="active" data-step="1"><span>1</span>Email</li><li data-step="2"><span>2</span>About you</li></ol>
+          </div>
+          <form class="step" data-step="1" novalidate>
+            <label class="field"><span class="label">Email address <em>*</em></span>
+              <input name="email" type="email" autocomplete="email" placeholder="you@yourfirm.com" required><span class="error"></span></label>
+            <div class="actions"><button class="btn primary" type="submit">Continue</button></div>
+          </form>
+          <form class="step" data-step="2" novalidate hidden>
+            <button class="back" type="button">← Back</button>
+            <p class="step-email">Creating an account for <b data-echo></b> · fields marked <em>*</em> are required</p>
+            <div class="grid">
+              <label class="field"><span class="label">First name <em>*</em></span><input name="firstName" autocomplete="given-name" required><span class="error"></span></label>
+              <label class="field"><span class="label">Last name <em>*</em></span><input name="lastName" autocomplete="family-name" required><span class="error"></span></label>
+            </div>
+            <label class="field"><span class="label">Company name <em>*</em></span><input name="companyName" autocomplete="organization" required><span class="error"></span></label>
+            <fieldset class="field" data-group="companyType" data-required>
+              <legend class="label">Company type <em>*</em></legend>
+              <div class="options" id="company-types"></div><span class="error"></span>
+            </fieldset>
+            <label class="field narrow"><span class="label">Firm FCA number</span>
+              <input name="fcaNumber" inputmode="numeric" placeholder="e.g. 123456" data-pattern="^\d{6,7}$" data-pattern-msg="An FCA firm reference number is 6 or 7 digits."><span class="error"></span></label>
+            <div class="notice">
+              <p>By creating an account to access our premium content and tools, you will also receive marketing communications from Vanguard, including our latest market, product and service updates. You can unsubscribe at any time via the link in each communication. Further information on the use and storage of your personal data can be found in our <a href="#" data-noop>privacy policy</a>.</p>
+              <p>By creating an account, you will need to confirm your acceptance of the <a href="#" data-noop>terms and conditions</a> and the <a href="#" data-noop>IP agreement</a> to use Vanguard resources.</p>
+            </div>
+            <label class="check"><input type="checkbox" name="confirm" required><span class="box" aria-hidden="true"></span>
+              <span>Tick to confirm you have read and agree with the privacy policy, IP agreement and terms and conditions. <em>*</em></span></label>
+            <span class="error" data-error="confirm"></span>
+            <div class="actions"><span class="hint">Profile fields stay with CL6 — only the consent goes to CPMS.</span><button class="btn primary" type="submit">Create account</button></div>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-sent" role="tabpanel" hidden><div class="card" id="sent-body"></div></section>
+      <section class="panel" id="panel-onetrust" role="tabpanel" hidden><div class="card" id="ot-body"></div></section>
+    </main>
+  </div>
+</div>
+
+<!-- Preview modal -->
+<div class="overlay" id="overlay" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal">
+    <div class="modal-head">
+      <div><h3 id="modal-title">Event that will be sent to CPMS</h3><div class="meta" id="meta"></div></div>
+      <button class="icon-btn" id="close" aria-label="Close">×</button>
+    </div>
+    <pre class="code" id="payload"></pre>
+    <div class="modal-foot">
+      <div class="status" id="status"></div>
+      <div class="actions">
+        <button class="btn ghost" id="cancel" type="button">Cancel</button>
+        <button class="btn primary" id="send" type="button">Send to CPMS</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js" type="module"></script>
+</body>
+</html>
