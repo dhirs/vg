@@ -1,38 +1,27 @@
 {
   "version": "1.0",
   "updatedAt": "2026-10-23T00:00:00Z",
-  "_note": "All OneTrust IDs below are MADE-UP TEST UUIDs (00000000-0000-4000-8000-…) so the pipeline can produce schema-valid receipts before tenant values exist. Replace them with the real IDs from the OneTrust tenant. The topic -> parent purpose and channel-as-custom-preference structure is an ASSUMPTION about the tenant setup (design.md -> Open items).",
+  "_note": "All OneTrust IDs below are MADE-UP TEST UUIDs (00000000-0000-4000-8000-…) so the pipeline can produce schema-valid receipts before tenant values exist. Replace them with the real IDs from the OneTrust tenant. The topic -> parent purpose and channel-as-custom-preference structure is an ASSUMPTION about the tenant setup (design.md -> Open items). 'marketing': true marks the purposes withdrawn by a preference centre's 'opt out of all marketing contact'.",
   "purposeCodes": [
     {
-      "code": "marketing_email",
+      "code": "marketing_communications",
       "oneTrustPurposeId": "00000000-0000-4000-8000-000000000101",
       "legalBasis": "consent",
-      "description": "General marketing emails (newsletters, promotions)."
+      "marketing": true,
+      "description": "Marketing communications from Vanguard (market, product and service updates) on any channel."
     },
     {
       "code": "event_communications",
       "oneTrustPurposeId": "00000000-0000-4000-8000-000000000102",
       "legalBasis": "consent",
       "description": "Communications tied to a specific event registration (reminders, follow-ups)."
-    },
-    {
-      "code": "data_sharing_partners",
-      "oneTrustPurposeId": "00000000-0000-4000-8000-000000000103",
-      "legalBasis": "legitimate_interest",
-      "description": "Sharing data with third-party partners (e.g. Cvent, Kaltura) for event delivery."
-    },
-    {
-      "code": "account_servicing",
-      "oneTrustPurposeId": "00000000-0000-4000-8000-000000000104",
-      "legalBasis": "contract",
-      "description": "Operational communications required to service an account (not marketing)."
     }
   ],
   "topicCodes": [
     {
       "code": "product_updates",
       "description": "Updates about product features and releases.",
-      "purposeCode": "marketing_email",
+      "purposeCode": "marketing_communications",
       "oneTrustTopicId": "00000000-0000-4000-8000-000000000201",
       "oneTrustChannelPreferenceId": "00000000-0000-4000-8000-000000000301",
       "oneTrustChannelOptions": {
@@ -56,7 +45,7 @@
     {
       "code": "newsletter",
       "description": "Periodic newsletter digest.",
-      "purposeCode": "marketing_email",
+      "purposeCode": "marketing_communications",
       "oneTrustTopicId": "00000000-0000-4000-8000-000000000203",
       "oneTrustChannelPreferenceId": "00000000-0000-4000-8000-000000000303",
       "oneTrustChannelOptions": {
@@ -67,8 +56,14 @@
     }
   ],
   "channels": [
-    { "code": "email" },
-    { "code": "sms" },
-    { "code": "push" }
+    {
+      "code": "email"
+    },
+    {
+      "code": "sms"
+    },
+    {
+      "code": "push"
+    }
   ]
 }

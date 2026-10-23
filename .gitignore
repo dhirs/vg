@@ -16,3 +16,6 @@ __pycache__/
 
 # Node
 node_modules/
+
+# Stub CRM for the local test app (holds email addresses)
+emo_cl6_update/web/data/

@@ -81,5 +81,6 @@ Inventory of infrastructure components. For *why* decisions were made this way, 
 
 ## Not yet built / designed
 
+- **Preference read path** (for the preference centre / future update form) — Vanguard 365 sign-in, a CRM lookup (local ID → email) and a OneTrust read (email → current preferences). Stubbed in `web/` today (demo user, one-entry CRM, preferences rebuilt from CPMS's S3 records). See `design.md` → "Reading a signed-in user's current preferences".
 - **Dispatcher** — will eventually read the outbound request queue and make the real OneTrust API call once paid access exists. Not designed.
 - **VPC + VPC endpoints** — **prod only** (dev has no Redis, so no VPC). Required for any Lambda touching Redis (step 1, step 4, taxonomy cache updater); endpoints needed for those same Lambdas to reach S3/SQS without going through NAT. Not provisioned yet.

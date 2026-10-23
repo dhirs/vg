@@ -23,6 +23,11 @@
         <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>
         <span>Account registration<small>CL6 · Vanguard 365 adviser account</small></span>
       </a>
+      <span class="side-label side-label-gap">Signed-in flows</span>
+      <a href="#/preferences" class="side-link" data-flow="preferences">
+        <svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+        <span>Preference centre<small>Signed-in user · current settings</small></span>
+      </a>
     </nav>
     <div class="side-foot"><span class="env-pill">Test harness · dev</span></div>
   </aside>
@@ -51,7 +56,29 @@
       </div>
     </section>
 
+    <!-- Preference centre header -->
+    <section class="hero" data-flow="preferences" hidden>
+      <div class="hero-inner">
+        <span class="eyebrow">Vanguard 365</span>
+        <h1>Your communication preferences</h1>
+        <p class="hero-lead">See how we currently contact you and what you've agreed to.</p>
+      </div>
+    </section>
+
     <main class="wrap">
+      <!-- ===== Preference centre (signed-in user) ===== -->
+      <div data-flow="preferences" hidden>
+        <div class="card progress-card">
+          <div class="progress-head">
+            <h2>Loading your preferences</h2>
+            <button class="btn ghost small" id="signout" type="button" hidden>Sign out</button>
+          </div>
+          <ol class="progress" id="progress"></ol>
+        </div>
+        <div class="card" id="pc-body"></div>
+      </div>
+
+      <div data-flow="event account">
       <nav class="tabs" role="tablist" aria-label="Views">
         <button class="tab active" role="tab" data-tab="form" type="button" id="tab-form">Register</button>
         <button class="tab" role="tab" data-tab="sent" type="button">Event sent to CPMS</button>
@@ -133,6 +160,7 @@
 
       <section class="panel" id="panel-sent" role="tabpanel" hidden><div class="card" id="sent-body"></div></section>
       <section class="panel" id="panel-onetrust" role="tabpanel" hidden><div class="card" id="ot-body"></div></section>
+      </div>
     </main>
   </div>
 </div>

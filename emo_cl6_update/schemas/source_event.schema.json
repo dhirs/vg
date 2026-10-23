@@ -90,7 +90,7 @@
         "properties": {
           "purpose": {
             "type": "string",
-            "description": "What the consent is for, e.g. 'marketing_email', 'event_communications'."
+            "description": "What the consent is for, e.g. 'marketing_communications', 'event_communications'."
           },
           "status": {
             "type": "string",

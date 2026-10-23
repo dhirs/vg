@@ -64,7 +64,7 @@ consent and provenance data (not deferred to later).
     registering *is* the agreement ("By registering, you will also receive marketing
     communications from Vanguard…"), plus a privacy/cookie policy confirmation tick. So
     EMO sends a **consent-only** event: `eventType: event_registration`,
-    `sourceSystem: emo`, `consent[]` with `marketing_email` and `event_communications`
+    `sourceSystem: emo`, `consent[]` with `marketing_communications` and `event_communications`
     (*assumed* — see Open items), each `status: granted`,
     `captureMethod: implied_by_registration`, and the agreed policy in
     `provenance.policyVersion`. The page's profile fields (name, job role, firm, firm size)
@@ -76,9 +76,9 @@ consent and provenance data (not deferred to later).
     account… you will also receive marketing communications from Vanguard…"), plus a
     required tick accepting the privacy policy, IP agreement and terms and conditions. Not
     tied to any event. Sends a **consent-only** event: `eventType: account_registration`,
-    `sourceSystem: cl6`, `consent[]` with `marketing_email` and
-    `account_servicing` (*assumed* — accepting the T&Cs is the account contract), each
-    `status: granted`, `captureMethod: implied_by_account_creation`. Profile fields are not
+    `sourceSystem: cl6`, `consent[]` with `marketing_communications`,
+    `status: granted`, `captureMethod: implied_by_account_creation`. Accepting the T&Cs and
+    IP agreement is not a CPMS purpose (see **Taxonomy scope**). Profile fields are not
     sent to CPMS.
   - **Update** (`eventType: preference_update`, not built yet): load the person's current
     settings from OneTrust first, then send only what **changed** — `opt_in` for things
@@ -140,7 +140,7 @@ topics later with minimal downstream impact.
   mechanism behind "minimal downstream impact."
 - `legalBasis` on each consent item is optional and **derived during transform** (step 2)
   from the taxonomy mapping — not something sources send. E.g. `purposeCode:
-  "marketing_email"` → `legalBasis: "consent"`.
+  "marketing_communications"` → `legalBasis: "consent"`.
 - Schema file written. Mirrors `provenance.captureChannel` from `source_event` and keeps
   `preferences[].channel` as a distinct field (comms channel, not capture context).
 - `header.occurredAt` and `consent[].captureMethod` are carried from the source event
@@ -152,6 +152,13 @@ topics later with minimal downstream impact.
   traceable, without forcing every source to generate correlation IDs.
 
 ## Taxonomy reference (purposeCode / topicCode / channel validity + OneTrust ID mapping)
+
+**Taxonomy scope — decided: communication purposes only.** The taxonomy holds the purposes
+a person can choose to receive communications for (today `marketing_communications` and
+`event_communications`) and their topics. Non-marketing purposes — e.g. sharing data with
+partners, or servicing the account under its contract — were **removed**: they aren't
+choices in a preference centre and don't belong in this flow. Step 1 rejects an event that
+references them.
 
 - **Source of truth:** a file in **S3** — reviewable, versioned.
 - **Read path:** **ElastiCache (Redis)**, not S3 directly, and **not** a locally-cached
@@ -403,7 +410,7 @@ they **arrive**. It says nothing about the order consent was actually **given**
 - Two sources report on the same person with different delays (e.g. Cvent syncs hourly,
   the portal is real-time).
 
-Concrete failure: user opts **in** to `marketing_email` on Monday via Cvent, opts **out**
+Concrete failure: user opts **in** to `marketing_communications` on Monday via Cvent, opts **out**
 on Tuesday via the portal. The portal event arrives Tuesday; Cvent's batch arrives
 Wednesday. FIFO dutifully processes them in arrival order — opt-out, then opt-in — and
 OneTrust's upsert applies the last one it receives. The user ends up **opted in** after
@@ -422,7 +429,7 @@ the payload (step 3), and advance the record only after the payload is safely en
 ```
 s3://<watermark-bucket>/watermarks/<sha256(subjectId)>.json
 {
-  "purpose#marketing_email": { "capturedAt": "2026-10-20T09:15:00Z", "eventId": "..." },
+  "purpose#marketing_communications": { "capturedAt": "2026-10-20T09:15:00Z", "eventId": "..." },
   "pref#newsletter#email":   { "capturedAt": "2026-10-18T14:02:00Z", "eventId": "..." }
 }
 ```
@@ -437,7 +444,7 @@ s3://<watermark-bucket>/watermarks/<sha256(subjectId)>.json
   pipeline. The Lambdas already run in the VPC with an S3 gateway endpoint, so no new
   networking.
 - **Why per item, not per event or per subject.** One event can carry a *newer*
-  `marketing_email` decision and an *older* `event_communications` one. A single
+  `marketing_communications` decision and an *older* `event_communications` one. A single
   per-subject timestamp would have to accept or reject the whole event, either losing
   the new decision or applying the stale one. Per-item keys keep exactly the new parts.
 - **Why one object per subject, not one per item.** One GET and one PUT per event
@@ -627,7 +634,7 @@ see it — so we can, and should, treat it as one.
 
 The **Vanguard EMO service** captures Cvent and Kaltura registrations and sends them to
 CPMS. In OneTrust it is set up as the collection point **"Vanguard EMO"** (API type,
-scoped to e.g. `marketing_email` and `event_communications`).
+scoped to e.g. `marketing_communications` and `event_communications`).
 
 1. **Capture.** Jane registers for a webinar in Cvent and ticks "newsletter by email". EMO
    picks up the registration and sends CPMS a `source_event` with
@@ -661,6 +668,68 @@ email through the EMO collection point — which is why that setting matters.
   field and to accept the placeholder. Changes when the dispatcher is built.
 - The `sourceSystem` → collection point mapping, the Secrets Manager secrets, the KMS key
   and the dispatcher don't exist yet.
+
+## Preference centre: a signed-in user reads and changes their preferences
+
+The **update** flow: work out who the person is, load their current settings, let them
+change them, and send only the changes. Built in the test app (`web/`, "Preference
+centre") with stubs; the real version needs CRM and OneTrust read access.
+
+1. **Signed in?** The person must have a Vanguard 365 session; if not, they sign in first.
+2. **Link** — the page offers a link carrying the person's **local ID** (their CL6 / CRM
+   identifier), e.g. `…/preferences?localId=CL6-100234`.
+3. **CRM lookup** — local ID → email.
+4. **OneTrust lookup** — email → the subject's current consent and preferences.
+5. **Show the current settings, editable** — grouped the way OneTrust stores them: each
+   **purpose** (with an on/off switch), and under it its **topics**, each with
+   email / SMS / push switches; plus a single **"Opt out of all marketing contact"**
+   switch. Switching a purpose **off** greys out its topics and sends the purpose
+   `withdrawn` plus `opt_out` for **every** topic × channel under it (a full set, for the
+   same reason as opt-out-all below); clicking a topic under an off purpose turns the
+   purpose back on. Other rules:
+   - **Registration defaults.** A topic × channel with no explicit choice yet takes its
+     value from the topic's purpose: the registration pages' "you will also receive
+     marketing communications" means **email on** for every topic under a granted purpose;
+     SMS and push stay off until chosen. *(Assumption — confirm.)*
+   - **Opt out of all marketing** switches every topic × channel off and withdraws the
+     purposes flagged `marketing: true` in the taxonomy (today `marketing_communications`
+     — all Vanguard marketing, on any channel; renamed from `marketing_email`, which wrongly
+     suggested email only). It's the one save that sends the **full set**, not just the
+     changes: every marketing purpose withdrawn and **every** topic × channel opted out,
+     even ones that look off already — because the page loaded CPMS's view, not
+     OneTrust's, and a changes-only opt-out could leave behind something another system
+     switched on at OneTrust.
+     Registered-event messages (`event_communications`) are not withdrawn and continue.
+   - **Switching a topic on** (re)grants its parent purpose, so a receipt can never say
+     "purpose withdrawn" and "topic on" at once.
+6. **Save** — only what differs from what was loaded is sent, as a `source_event` with
+   `eventType: preference_update`, `sourceSystem: cl6`,
+   `captureMethod: preference_centre`. Switching something **off** is sent explicitly
+   (`withdrawn` for a purpose, `opt_out` for a topic × channel) — unlike a registration,
+   the person already has settings, so silence would leave the old "on" in place. The page
+   then waits for CPMS's result, shows what was sent to OneTrust, and reloads the settings.
+
+**Ownership checks are the point of step 1.** The link alone must never be enough: the
+server only resolves a local ID that belongs to the **signed-in** user, only returns
+preferences for **that** user's email, and builds a `preference_update` with the subject
+taken from the session (never from the browser) and refuses to send one for anyone else.
+Otherwise changing the ID in the URL would expose — or change — someone else's settings.
+
+**OneTrust stand-in (dev).** With no OneTrust read access yet, step 4 is rebuilt from CPMS's
+own records, without scanning: the subject's watermark
+(`cpms/watermarks/<sha256(email)>.json`) lists every item CPMS has sent with the `eventId`
+of the latest decision, and that event's success record holds the status. Caveat shown on
+the page: this is *what CPMS last sent*, not necessarily OneTrust's state — another system
+may have changed OneTrust since.
+
+**Stubs in the test app:**
+- **Stub CRM** — a local JSON file, `web/data/stub-crm.json` (git-ignored: it holds email
+  addresses), mapping local ID ↔ email, name, company. Every registration sent from the EMO
+  or CL6 page adds its person if new, with the next local ID (`CL6-100235`, …); it starts
+  with one demo user (`dheeraj.saxena@kwantsolutions.co.uk`, `CL6-100234`). Kept out of S3
+  on purpose: it stands in for an external CRM and isn't CPMS data.
+- **Sign-in** — simulated: any email in the stub CRM + password `demo`; an in-memory
+  session cookie.
 
 ## Error handling rules
 
@@ -816,16 +885,15 @@ networking and extra storage before the flow is proven.
   authentication of the person (login / magic link — OneTrust link tokens), so nobody
   can view or change someone else's preferences by typing their email. Likely its own
   flow folder.
-- **Which purposes does an EMO event registration grant?** Assumed `marketing_email`
+- **Which purposes does an EMO event registration grant?** Assumed `marketing_communications`
   (the page's marketing statement) + `event_communications` (communications about the
   event itself). Confirm, and confirm the **legal basis**: marketing consent that comes
   bundled with registration may not count as freely-given *consent* under UK GDPR; for
   professional advisers at firms Vanguard may rely on **legitimate interest** instead.
   The taxonomy's `legalBasis` must say whichever applies — it's what OneTrust records.
   Privacy/legal decision.
-- **Which purposes does an account registration grant, and from which source?** Assumed
-  `marketing_email` + `account_servicing` (legal basis `contract`, from accepting the T&Cs
-  and IP agreement), with `sourceSystem: cl6`. Same legal-basis question as
+- **Which purposes does an account registration grant?** Assumed
+  `marketing_communications` only, with `sourceSystem: cl6`. Same legal-basis question as
   above for the bundled marketing. Also: the tick covers **three** documents (privacy
   policy, IP agreement, T&Cs) but `provenance.policyVersion` holds one version — decide
   whether to record all three versions.
@@ -837,8 +905,16 @@ networking and extra storage before the flow is proven.
 - **Topic chosen at registration → also consent to its parent purpose?** Today a
   registration's topic choices are sent under `TransactionType: CHANGE_PREFERENCES`
   (records the preference only). If ticking "newsletter by email" at sign-up should also
-  count as consent to `marketing_email`, step 4 should send that purpose as `CONFIRMED`
+  count as consent to `marketing_communications`, step 4 should send that purpose as `CONFIRMED`
   instead — business/legal decision.
+- ~~Withdrawing a purpose vs its topics~~ — **resolved**: the preference centre no longer
+  exposes purposes directly; "opt out of all marketing" turns every topic off together
+  with the purpose, and turning a topic on re-grants its purpose (see **Preference
+  centre**).
+- **Is `event_invites` marketing?** It sits under `event_communications` (not flagged
+  marketing), so "opt out of all marketing" switches the invites topic off but leaves the
+  purpose — and reminders for registered events — in place. Confirm that split, and which
+  purposes count as marketing.
 - **Receipts sent without `interactionDate`** — OneTrust's docs don't say how those are
   ordered. Moot for CPMS (the schema makes it required) but relevant if anything else
   posts to the same collection point.
