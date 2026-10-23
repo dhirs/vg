@@ -10,3 +10,6 @@
 __pycache__/
 *.pyc
 .venv/
+
+# Generated diagram previews
+*.preview.html

@@ -18,6 +18,10 @@ a different flow. Each flow folder is internally structured the same way:
   building_blocks.md  - infrastructure parts list, for this flow
   schemas/             - JSON Schema contracts used by this flow
   diagrams/            - .drawio diagrams for this flow
+  web/                 - (optional) local test tools for this flow, e.g. a form that sends events
+  lambdas/<name>/      - Lambda code (handler.py + optional requirements.txt), one folder per function
+  deploy/              - boto3 scripts that create/update this flow's AWS resources and
+                         upload schemas/taxonomy (idempotent — safe to re-run)
 ```
 
 Root only holds this `CLAUDE.md`, `README.md`, and the flow folders — no design content
@@ -26,7 +30,7 @@ lives at root.
 ### Current flows
 
 - **`emo_cl6_update/`** — source triggers → OneTrust consent/preference update. Covers:
-  EventBridge ingestion, the per-source Step Function (validate → transform → canonical →
+  EventBridge ingestion, the single Step Function shared by all sources (validate → transform → canonical →
   build OneTrust payload → enqueue), the taxonomy reference/cache, and success/fail
   recording. This is the flow designed so far.
 
@@ -73,6 +77,15 @@ lives at root.
   → Redis read path) so new codes are a data change, not a schema/code change.
 
 ## Working with AWS
+
+- **Every AWS component is named `cpms-<component type>-<purpose>`**, e.g.
+  `cpms-eventbus-consent`, `cpms-lambda-validate-source`, `cpms-sqs-ingestion.fifo`.
+  Type segments and the full list of names are in the flow's `design.md` → "Naming
+  convention".
+- **No new S3 buckets.** All S3 storage uses the existing bucket in `.env.prod`
+  (`AWS_BUCKET_NAME`), under the `cpms/` key prefix (schemas, taxonomy, watermarks,
+  success/fail records).
+- **Dev has no ElastiCache/VPC** — taxonomy is read directly from S3.
 
 - Interact with AWS using inline Python (`boto3`), **not the AWS CLI** — e.g. a
   `python3 - <<'EOF' ... EOF` heredoc or a short throwaway script.

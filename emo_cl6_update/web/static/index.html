@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Communication Preferences</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f4f6f9; --card: #ffffff; --ink: #14213d; --muted: #5b6577; --line: #e3e7ee;
+    --brand: #8c1c13; --brand-ink: #ffffff; --brand-soft: #fbeeec; --ok: #1f7a4d; --err: #b42318;
+    --shadow: 0 1px 2px rgba(20,33,61,.06), 0 8px 24px rgba(20,33,61,.06);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 Inter, system-ui, sans-serif; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 48px 16px 80px; }
+  header h1 { font-size: 30px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -.02em; }
+  header p { margin: 0 0 32px; color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 28px; margin-bottom: 20px; }
+  .step { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+  .step .num { width: 28px; height: 28px; border-radius: 50%; background: var(--brand); color: var(--brand-ink); display: grid; place-items: center; font-weight: 600; font-size: 14px; flex: none; }
+  .step h2 { font-size: 18px; margin: 0; }
+  .hint { color: var(--muted); margin: 0 0 20px 40px; font-size: 14px; }
+  label.field { display: block; font-weight: 500; margin-bottom: 6px; }
+  input[type=email] { width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; font: inherit; color: inherit; }
+  input[type=email]:focus { outline: 2px solid var(--brand); outline-offset: 1px; border-color: transparent; }
+  .err-text { color: var(--err); font-size: 13px; margin-top: 6px; min-height: 18px; }
+
+  .channels { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .channel { position: relative; border: 1.5px solid var(--line); border-radius: 12px; padding: 16px; cursor: pointer; transition: border-color .15s, background .15s; user-select: none; }
+  .channel:hover { border-color: #c9cfda; }
+  .channel.on { border-color: var(--brand); background: var(--brand-soft); }
+  .channel input { position: absolute; opacity: 0; pointer-events: none; }
+  .channel .icon { width: 36px; height: 36px; border-radius: 10px; background: #eef1f6; display: grid; place-items: center; margin-bottom: 10px; }
+  .channel.on .icon { background: var(--brand); color: var(--brand-ink); }
+  .channel .name { font-weight: 600; }
+  .channel .desc { color: var(--muted); font-size: 13px; }
+  .channel .check { position: absolute; top: 14px; right: 14px; width: 20px; height: 20px; border-radius: 6px; border: 1.5px solid #c9cfda; display: grid; place-items: center; color: transparent; }
+  .channel.on .check { background: var(--brand); border-color: var(--brand); color: #fff; }
+
+  .topic { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 0; border-top: 1px solid var(--line); }
+  .topic:first-child { border-top: 0; padding-top: 0; }
+  .topic .t-name { font-weight: 600; }
+  .topic .t-desc { color: var(--muted); font-size: 13px; }
+  .pills { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .pill { border: 1.5px solid var(--line); background: #fff; border-radius: 999px; padding: 6px 12px; font: 500 13px Inter, sans-serif; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  .pill.on { border-color: var(--brand); background: var(--brand); color: #fff; }
+  .pill:disabled { opacity: .4; cursor: not-allowed; }
+  .empty { color: var(--muted); font-size: 14px; padding: 8px 0; }
+
+  .actions { display: flex; justify-content: flex-end; gap: 12px; }
+  .btn { border: 0; border-radius: 10px; padding: 12px 22px; font: 600 15px Inter, sans-serif; cursor: pointer; }
+  .btn.primary { background: var(--brand); color: var(--brand-ink); }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  .btn:disabled { opacity: .6; cursor: progress; }
+
+  .overlay { position: fixed; inset: 0; background: rgba(20,33,61,.55); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 10; }
+  .overlay.open { display: flex; }
+  .modal { background: var(--card); border-radius: 16px; width: min(760px, 100%); max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 24px 64px rgba(0,0,0,.25); }
+  .modal-head { padding: 20px 24px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: start; gap: 16px; }
+  .modal-head h3 { margin: 0 0 4px; font-size: 18px; }
+  .meta { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); }
+  .x { background: none; border: 0; font-size: 22px; line-height: 1; cursor: pointer; color: var(--muted); }
+  pre { margin: 0; padding: 20px 24px; overflow: auto; background: #0f172a; color: #e2e8f0; font: 12.5px/1.6 ui-monospace, Menlo, monospace; flex: 1; }
+  .k { color: #93c5fd; } .s { color: #86efac; } .n { color: #fcd34d; } .b { color: #f9a8d4; }
+  .modal-foot { padding: 16px 24px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .status { font-size: 14px; flex: 1; min-width: 200px; }
+  .status.ok { color: var(--ok); } .status.err { color: var(--err); white-space: pre-wrap; }
+  @media (max-width: 560px) { .topic { flex-direction: column; align-items: flex-start; } .pills { justify-content: flex-start; } .card { padding: 20px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Communication preferences</h1>
+    <p>Choose how we contact you and what you'd like to hear about. You can change this at any time.</p>
+  </header>
+
+  <form id="form" novalidate>
+    <div class="card">
+      <label class="field" for="email">Email address</label>
+      <input id="email" type="email" placeholder="you@example.com" autocomplete="email" required>
+      <div class="err-text" id="email-err"></div>
+    </div>
+
+    <div class="card">
+      <div class="step"><span class="num">1</span><h2>How should we reach you?</h2></div>
+      <p class="hint">Select every channel you're happy for us to use.</p>
+      <div class="channels" id="channels"></div>
+    </div>
+
+    <div class="card">
+      <div class="step"><span class="num">2</span><h2>What would you like to hear about?</h2></div>
+      <p class="hint">Everything is on for the channels you chose — untick anything you don't want.</p>
+      <div id="topics"></div>
+    </div>
+
+    <div class="actions"><button class="btn primary" type="submit">Save preferences</button></div>
+  </form>
+</div>
+
+<div class="overlay" id="overlay" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal">
+    <div class="modal-head">
+      <div><h3 id="modal-title">Event payload</h3><div class="meta" id="meta"></div></div>
+      <button class="x" id="close" aria-label="Close">&times;</button>
+    </div>
+    <pre id="payload"></pre>
+    <div class="modal-foot">
+      <div class="status" id="status"></div>
+      <div class="actions">
+        <button class="btn ghost" id="cancel" type="button">Cancel</button>
+        <button class="btn primary" id="send" type="button">Send to CPMS</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const LABELS = {
+  email: ["Email", "Messages to your inbox"],
+  sms: ["Text message", "SMS to your mobile"],
+  push: ["Push notifications", "Alerts in our app"],
+};
+const ICONS = {
+  email: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>',
+  sms: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>',
+  push: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>',
+};
+const TICK = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="m5 12 5 5 9-10"/></svg>';
+const titleCase = s => s.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+
+let channels = [], topics = [];
+const enabled = new Set();          // channels chosen in step 1
+const picks = new Set();            // "topic|channel" chosen in step 2
+let current = null;                 // event shown in the modal
+
+const $ = id => document.getElementById(id);
+
+function renderChannels() {
+  $("channels").innerHTML = channels.map(c => {
+    const [name, desc] = LABELS[c.code] || [titleCase(c.code), ""];
+    return `<label class="channel ${enabled.has(c.code) ? "on" : ""}" data-code="${c.code}">
+      <input type="checkbox" ${enabled.has(c.code) ? "checked" : ""}>
+      <span class="check">${TICK}</span>
+      <div class="icon">${ICONS[c.code] || ""}</div>
+      <div class="name">${name}</div><div class="desc">${desc}</div></label>`;
+  }).join("");
+}
+
+function renderTopics() {
+  const active = channels.filter(c => enabled.has(c.code));
+  $("topics").innerHTML = topics.map(t => `
+    <div class="topic">
+      <div><div class="t-name">${titleCase(t.code)}</div><div class="t-desc">${t.description || ""}</div></div>
+      <div class="pills">${active.length ? active.map(c => {
+        const on = picks.has(`${t.code}|${c.code}`);
+        return `<button type="button" class="pill ${on ? "on" : ""}" data-key="${t.code}|${c.code}">${on ? TICK : ""}${(LABELS[c.code] || [titleCase(c.code)])[0]}</button>`;
+      }).join("") : '<span class="empty">Choose a channel above first</span>'}</div>
+    </div>`).join("");
+}
+
+$("channels").addEventListener("click", e => {
+  const card = e.target.closest(".channel"); if (!card) return;
+  e.preventDefault();
+  const code = card.dataset.code;
+  // Turning a channel on opts it into every topic (user then unticks what they don't want);
+  // turning it off clears them — so a selected channel never silently sends all opt_outs.
+  const on = !enabled.has(code);
+  if (on) enabled.add(code); else enabled.delete(code);
+  topics.forEach(t => on ? picks.add(`${t.code}|${code}`) : picks.delete(`${t.code}|${code}`));
+  renderChannels(); renderTopics();
+});
+
+$("topics").addEventListener("click", e => {
+  const pill = e.target.closest(".pill"); if (!pill) return;
+  const key = pill.dataset.key;
+  if (picks.has(key)) picks.delete(key); else picks.add(key);
+  // Unticking a channel's last topic turns the channel itself off, keeping step 1 and step 2 consistent.
+  const code = key.split("|")[1];
+  if (!topics.some(t => picks.has(`${t.code}|${code}`))) { enabled.delete(code); renderChannels(); }
+  renderTopics();
+});
+
+function highlight(json) {
+  return json.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/("(\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|-?\d+(\.\d+)?/g, (m, str, _, colon, bool) =>
+      str ? (colon ? `<span class="k">${str}</span>${colon}` : `<span class="s">${str}</span>`)
+          : bool ? `<span class="b">${m}</span>` : `<span class="n">${m}</span>`);
+}
+
+function setStatus(text, kind = "") { $("status").textContent = text; $("status").className = "status " + kind; }
+function openModal() { $("overlay").classList.add("open"); }
+function closeModal() { $("overlay").classList.remove("open"); }
+
+$("form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const email = $("email").value.trim();
+  if (!$("email").checkValidity() || !email) { $("email-err").textContent = "Enter a valid email address."; $("email").focus(); return; }
+  $("email-err").textContent = "";
+  // Every topic x channel is sent explicitly: opted in only if the channel is on AND picked for that topic.
+  const choices = topics.flatMap(t => channels.map(c => ({
+    topic: t.code, channel: c.code, optedIn: enabled.has(c.code) && picks.has(`${t.code}|${c.code}`),
+  })));
+  const res = await fetch("/api/preview", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, choices, locale: navigator.language }) });
+  const data = await res.json();
+  current = data.event;
+  $("meta").textContent = `bus: ${data.entry.EventBusName}  ·  source: ${data.entry.Source}  ·  detail-type: ${data.entry.DetailType}`;
+  $("payload").innerHTML = highlight(JSON.stringify(data.event, null, 2));
+  $("send").disabled = !!data.errors.length;
+  setStatus(data.errors.length ? "Fails source_event schema:\n" + data.errors.join("\n") : "", data.errors.length ? "err" : "");
+  openModal();
+});
+
+$("send").addEventListener("click", async () => {
+  $("send").disabled = true; setStatus("Sending…");
+  try {
+    const res = await fetch("/api/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: current }) });
+    const data = await res.json();
+    if (res.ok) { setStatus(`Sent to ${data.bus} — EventBridge id ${data.eventBridgeId}`, "ok"); return; }
+    setStatus(data.errors.join("\n"), "err");
+  } catch (err) { setStatus("Could not reach the local server: " + err.message, "err"); }
+  $("send").disabled = false;
+});
+
+["close", "cancel"].forEach(id => $(id).addEventListener("click", closeModal));
+$("overlay").addEventListener("click", e => { if (e.target === $("overlay")) closeModal(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+
+fetch("/api/taxonomy").then(r => r.json()).then(t => { channels = t.channels; topics = t.topics; renderChannels(); renderTopics(); });
+</script>
+</body>
+</html>

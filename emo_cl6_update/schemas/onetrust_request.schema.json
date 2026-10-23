@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vanguard.internal/schemas/onetrust_request.schema.json",
+  "title": "OneTrustRequest",
+  "description": "One message on the outbound FIFO queue (cpms-sqs-outbound.fifo): a complete, ready-to-send HTTP request to OneTrust's Create Consent Receipts API. The dispatcher sends method/url/headers/body exactly as given. Produced by step 4, validated against this schema by step 5. 'body' follows OneTrust's published request schema (https://developer.onetrust.com/onetrust/reference/createconsentreceiptusingpost); constraints marked 'CPMS rule' are stricter than OneTrust and exist for this pipeline's guarantees. OneTrust performs no data-type validation on this API, so this schema is the only check before data lands in OneTrust.",
+  "type": "object",
+  "required": ["method", "url", "headers", "body", "correlationId"],
+  "additionalProperties": false,
+  "properties": {
+    "method": { "const": "POST" },
+    "url": {
+      "type": "string",
+      "description": "OneTrust Consent Receipts endpoint on one of OneTrust's published hosts. '/identified' is the identified-receipt variant (same body).",
+      "pattern": "^https://(privacyportal|privacyportal-eu|privacyportaluat|privacyportaluateu|privacyportaltrial)\\.onetrust\\.com/request/v1/consentreceipts(/identified)?$"
+    },
+    "headers": {
+      "type": "object",
+      "required": ["Content-Type"],
+      "additionalProperties": false,
+      "properties": {
+        "Content-Type": { "const": "application/json" },
+        "authorization": {
+          "type": "string",
+          "pattern": "^Bearer .+",
+          "description": "Optional per OneTrust: a signed JWT verifiable with the public key configured in OneTrust; its 'sub' claim should match body.identifier. The collection point JWT in body.requestInformation is normally sufficient."
+        }
+      }
+    },
+    "correlationId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Carried from the canonical header — ties the OneTrust call back to the source event. Not sent to OneTrust."
+    },
+    "body": { "$ref": "#/$defs/consentReceipt" }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "format": "uuid" },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "stringMap": { "type": "object", "additionalProperties": { "type": "string" } },
+    "privacyNotice": {
+      "type": "object",
+      "required": ["Id"],
+      "additionalProperties": false,
+      "properties": {
+        "Id": { "$ref": "#/$defs/uuid" },
+        "Version": { "type": "integer" },
+        "MinorVersion": { "type": "integer" }
+      }
+    },
+    "attachment": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": { "id": { "$ref": "#/$defs/uuid" } }
+    },
+    "optInOut": { "enum": ["OPT_IN", "OPT_OUT"] },
+    "consentReceipt": {
+      "type": "object",
+      "description": "OneTrust RequestInformation (consent receipt) body.",
+      "required": ["identifier", "requestInformation", "interactionDate", "purposes"],
+      "additionalProperties": false,
+      "properties": {
+        "identifier": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The data subject's identifier (for us: the lowercased email = canonical subject.subjectId). Required by OneTrust."
+        },
+        "identifierType": {
+          "type": "string",
+          "description": "e.g. 'Email'. Required by OneTrust for dynamic-configuration collection points."
+        },
+        "requestInformation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The collection point's JWT, used unaltered — from the collection point's Integrations tab or the Get Collection Point Token API. Required by OneTrust; it is also the request's authorization."
+        },
+        "interactionDate": {
+          "$ref": "#/$defs/dateTime",
+          "description": "When the data subject interacted (= the items' capturedAt). CPMS rule: required — OneTrust uses it to ignore receipts older than the last recorded interaction ('will create a transaction but will not update the purpose status'), which is our out-of-order guard at OneTrust's end. OneTrust rejects a post that sends interactionDate together with any other date, so no other date fields are allowed here."
+        },
+        "purposes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "description": "OneTrust: no more than 10 recommended, absolute maximum 20 per receipt. CPMS rule: at least 1 (a receipt with no purposes changes nothing).",
+          "items": { "$ref": "#/$defs/purpose" }
+        },
+        "language": { "type": "string", "description": "e.g. 'en-GB' (from canonical provenance.locale)." },
+        "test": {
+          "type": "boolean",
+          "description": "OneTrust: once a subject is marked test=true it cannot be reverted to false."
+        },
+        "dsDataElements": { "$ref": "#/$defs/stringMap" },
+        "customPayload": {
+          "$ref": "#/$defs/stringMap",
+          "description": "OneTrust: total size must not exceed 4000 characters (not expressible in JSON Schema — checked in step 5 code)."
+        },
+        "additionalIdentifiers": { "$ref": "#/$defs/stringMap" },
+        "enableDataElementDateValidation": {
+          "type": "boolean",
+          "description": "When true, data elements are overwritten only if this receipt's interactionDate is later than the subject's last update — the same out-of-order protection for dsDataElements."
+        },
+        "generateInstantLinkToken": { "type": "boolean" },
+        "shortLinkToken": { "type": "boolean" },
+        "privacyNotices": { "type": "array", "items": { "$ref": "#/$defs/privacyNotice" } },
+        "attachments": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/attachment" } },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "enum": ["WEB", "MOBILE", "CUSTOM", "CTV"] },
+            "content": { "type": "string" },
+            "purposeIds": { "type": "array", "items": { "$ref": "#/$defs/uuid" } }
+          }
+        },
+        "geoLocation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "country": { "type": "string" },
+            "state": { "type": "string" },
+            "stateName": { "type": "string" },
+            "purposeIds": { "type": "array", "items": { "$ref": "#/$defs/uuid" } }
+          }
+        }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["generateInstantLinkToken", "shortLinkToken"], "properties": { "generateInstantLinkToken": { "const": true }, "shortLinkToken": { "const": true } } }
+        ]
+      },
+      "$comment": "The 'not' clause encodes OneTrust's rule that generateInstantLinkToken cannot be combined with shortLinkToken."
+    },
+    "purpose": {
+      "type": "object",
+      "description": "OneTrust DsPurpose.",
+      "required": ["Id", "TransactionType"],
+      "additionalProperties": false,
+      "properties": {
+        "Id": { "$ref": "#/$defs/uuid", "description": "The purpose's OneTrust ID (from the taxonomy mapping)." },
+        "TransactionType": {
+          "enum": ["PENDING", "CONFIRMED", "WITHDRAWN", "EXPIRED", "NOTGIVEN", "EXTEND", "OPT_OUT", "HARD_OPT_OUT", "NO_CHOICE", "CHANGE_PREFERENCES", "CANCEL", "IMPLICIT"],
+          "description": "OneTrust: optional and only supported for API-type collection points; allowed values also depend on collection point settings (e.g. PENDING only with double opt-in). CPMS rule: required — we always state the decision explicitly rather than relying on collection point defaults."
+        },
+        "Version": { "type": "integer" },
+        "Preferences": {
+          "type": "array",
+          "description": "Topic choices under this purpose. Not supported on Web Form collection points.",
+          "items": {
+            "type": "object",
+            "required": ["TopicId", "TransactionType"],
+            "additionalProperties": false,
+            "properties": {
+              "TopicId": { "$ref": "#/$defs/uuid" },
+              "TransactionType": { "$ref": "#/$defs/optInOut" }
+            }
+          }
+        },
+        "CustomPreferences": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["Id"],
+            "additionalProperties": false,
+            "properties": {
+              "Id": { "$ref": "#/$defs/uuid" },
+              "Options": {
+                "type": "array",
+                "description": "Only the options the subject should be opted INTO.",
+                "items": { "$ref": "#/$defs/uuid" }
+              },
+              "Choices": {
+                "type": "array",
+                "description": "Explicit per-option opt in/out — used with TransactionType CHANGE_PREFERENCES.",
+                "items": {
+                  "type": "object",
+                  "required": ["OptionId", "TransactionType"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "OptionId": { "$ref": "#/$defs/uuid" },
+                    "TransactionType": { "$ref": "#/$defs/optInOut" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "PrivacyNotices": { "type": "array", "items": { "$ref": "#/$defs/privacyNotice" } },
+        "ExpiryDate": { "$ref": "#/$defs/dateTime" },
+        "ReactivationDate": { "$ref": "#/$defs/dateTime", "description": "OneTrust: only valid when TransactionType is WITHDRAWN or OPT_OUT." },
+        "PurposeAttachments": { "type": "array", "items": { "$ref": "#/$defs/attachment" } },
+        "PurposeNote": {
+          "type": "object",
+          "required": ["noteText"],
+          "additionalProperties": false,
+          "properties": {
+            "noteId": { "$ref": "#/$defs/uuid" },
+            "noteType": { "const": "UNSUBSCRIBE_REASON" },
+            "noteLanguage": { "type": "string" },
+            "noteText": { "type": "string", "maxLength": 500 }
+          }
+        }
+      },
+      "if": { "required": ["ReactivationDate"] },
+      "then": { "properties": { "TransactionType": { "enum": ["WITHDRAWN", "OPT_OUT"] } } }
+    }
+  }
+}

@@ -1,28 +1,29 @@
 {
   "version": "1.0",
   "updatedAt": "2026-10-23T00:00:00Z",
+  "_note": "All OneTrust IDs below are MADE-UP TEST UUIDs (00000000-0000-4000-8000-…) so the pipeline can produce schema-valid receipts before tenant values exist. Replace them with the real IDs from the OneTrust tenant. The topic -> parent purpose and channel-as-custom-preference structure is an ASSUMPTION about the tenant setup (design.md -> Open items).",
   "purposeCodes": [
     {
       "code": "marketing_email",
-      "oneTrustPurposeId": "PC-1001",
+      "oneTrustPurposeId": "00000000-0000-4000-8000-000000000101",
       "legalBasis": "consent",
       "description": "General marketing emails (newsletters, promotions)."
     },
     {
       "code": "event_communications",
-      "oneTrustPurposeId": "PC-1002",
+      "oneTrustPurposeId": "00000000-0000-4000-8000-000000000102",
       "legalBasis": "consent",
       "description": "Communications tied to a specific event registration (reminders, follow-ups)."
     },
     {
       "code": "data_sharing_partners",
-      "oneTrustPurposeId": "PC-1003",
+      "oneTrustPurposeId": "00000000-0000-4000-8000-000000000103",
       "legalBasis": "legitimate_interest",
       "description": "Sharing data with third-party partners (e.g. Cvent, Kaltura) for event delivery."
     },
     {
       "code": "account_servicing",
-      "oneTrustPurposeId": "PC-1004",
+      "oneTrustPurposeId": "00000000-0000-4000-8000-000000000104",
       "legalBasis": "contract",
       "description": "Operational communications required to service an account (not marketing)."
     }
@@ -30,32 +31,44 @@
   "topicCodes": [
     {
       "code": "product_updates",
-      "oneTrustTopicId": "TP-2001",
-      "description": "Updates about product features and releases."
+      "description": "Updates about product features and releases.",
+      "purposeCode": "marketing_email",
+      "oneTrustTopicId": "00000000-0000-4000-8000-000000000201",
+      "oneTrustChannelPreferenceId": "00000000-0000-4000-8000-000000000301",
+      "oneTrustChannelOptions": {
+        "email": "00000000-0000-4000-8000-000000000311",
+        "sms": "00000000-0000-4000-8000-000000000312",
+        "push": "00000000-0000-4000-8000-000000000313"
+      }
     },
     {
       "code": "event_invites",
-      "oneTrustTopicId": "TP-2002",
-      "description": "Invitations to upcoming online/in-person events."
+      "description": "Invitations to upcoming online/in-person events.",
+      "purposeCode": "event_communications",
+      "oneTrustTopicId": "00000000-0000-4000-8000-000000000202",
+      "oneTrustChannelPreferenceId": "00000000-0000-4000-8000-000000000302",
+      "oneTrustChannelOptions": {
+        "email": "00000000-0000-4000-8000-000000000321",
+        "sms": "00000000-0000-4000-8000-000000000322",
+        "push": "00000000-0000-4000-8000-000000000323"
+      }
     },
     {
       "code": "newsletter",
-      "oneTrustTopicId": "TP-2003",
-      "description": "Periodic newsletter digest."
+      "description": "Periodic newsletter digest.",
+      "purposeCode": "marketing_email",
+      "oneTrustTopicId": "00000000-0000-4000-8000-000000000203",
+      "oneTrustChannelPreferenceId": "00000000-0000-4000-8000-000000000303",
+      "oneTrustChannelOptions": {
+        "email": "00000000-0000-4000-8000-000000000331",
+        "sms": "00000000-0000-4000-8000-000000000332",
+        "push": "00000000-0000-4000-8000-000000000333"
+      }
     }
   ],
   "channels": [
-    {
-      "code": "email",
-      "oneTrustChannelId": "CH-3001"
-    },
-    {
-      "code": "sms",
-      "oneTrustChannelId": "CH-3002"
-    },
-    {
-      "code": "push",
-      "oneTrustChannelId": "CH-3003"
-    }
+    { "code": "email" },
+    { "code": "sms" },
+    { "code": "push" }
   ]
 }

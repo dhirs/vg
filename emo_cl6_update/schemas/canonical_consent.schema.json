@@ -16,7 +16,14 @@
     "header": {
       "type": "object",
       "description": "Pipeline/envelope metadata. Kept separate from subject so envelope changes don't ripple into consent/preference mapping logic.",
-      "required": ["schemaVersion", "eventId", "eventType", "sourceSystem", "correlationId", "processedAt"],
+      "required": [
+        "schemaVersion",
+        "eventId",
+        "eventType",
+        "sourceSystem",
+        "correlationId",
+        "processedAt"
+      ],
       "additionalProperties": false,
       "properties": {
         "schemaVersion": {
@@ -35,9 +42,14 @@
           "type": "string",
           "description": "Carried from the source event, e.g. 'cvent', 'vanguard-portal'."
         },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Carried from the source event: when the underlying action happened on the source side."
+        },
         "correlationId": {
           "type": "string",
-          "description": "Carried from source_event.provenance.correlationId, if present."
+          "description": "Carried from source_event.provenance.correlationId; when the source didn't send one, step 2 sets it to the eventId so every record is traceable."
         },
         "processedAt": {
           "type": "string",
@@ -49,7 +61,10 @@
     "subject": {
       "type": "object",
       "description": "Who the consent/preferences apply to.",
-      "required": ["subjectId", "identifierType"],
+      "required": [
+        "subjectId",
+        "identifierType"
+      ],
       "additionalProperties": false,
       "properties": {
         "subjectId": {
@@ -67,7 +82,11 @@
       "description": "Legal/compliance permission decisions, one per purpose.",
       "items": {
         "type": "object",
-        "required": ["purposeCode", "status", "capturedAt"],
+        "required": [
+          "purposeCode",
+          "status",
+          "capturedAt"
+        ],
         "additionalProperties": false,
         "properties": {
           "purposeCode": {
@@ -76,7 +95,12 @@
           },
           "status": {
             "type": "string",
-            "enum": ["opt_in", "opt_out", "granted", "withdrawn"]
+            "enum": [
+              "opt_in",
+              "opt_out",
+              "granted",
+              "withdrawn"
+            ]
           },
           "capturedAt": {
             "type": "string",
@@ -85,6 +109,10 @@
           "legalBasis": {
             "type": "string",
             "description": "Optional. Legal basis for this purpose (e.g. 'consent', 'contract', 'legitimate_interest'), derived during transform from the taxonomy mapping rather than sent by the source."
+          },
+          "captureMethod": {
+            "type": "string",
+            "description": "Carried from the source: how the consent was captured (e.g. 'web_form_checkbox'). Kept because it's part of the consent's compliance evidence."
           }
         }
       }
@@ -94,7 +122,12 @@
       "description": "Granular topic+channel choices. Distinct from consent: a preference is a delivery choice, not necessarily a legal permission.",
       "items": {
         "type": "object",
-        "required": ["topicCode", "channel", "status", "capturedAt"],
+        "required": [
+          "topicCode",
+          "channel",
+          "status",
+          "capturedAt"
+        ],
         "additionalProperties": false,
         "properties": {
           "topicCode": {
@@ -107,7 +140,12 @@
           },
           "status": {
             "type": "string",
-            "enum": ["opt_in", "opt_out", "granted", "withdrawn"]
+            "enum": [
+              "opt_in",
+              "opt_out",
+              "granted",
+              "withdrawn"
+            ]
           },
           "capturedAt": {
             "type": "string",
@@ -119,7 +157,10 @@
     "provenance": {
       "type": "object",
       "description": "Traceability data, carried forward from source_event.provenance for the OneTrust record/audit trail.",
-      "required": ["sourceEventId", "captureChannel"],
+      "required": [
+        "sourceEventId",
+        "captureChannel"
+      ],
       "additionalProperties": false,
       "properties": {
         "sourceEventId": {

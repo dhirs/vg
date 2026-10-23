@@ -11,7 +11,6 @@
     "sourceSystem",
     "occurredAt",
     "subject",
-    "consent",
     "provenance"
   ],
   "additionalProperties": false,
@@ -27,7 +26,10 @@
     "eventType": {
       "type": "string",
       "description": "What kind of thing happened on the source side, e.g. 'event_registration', 'account_registration'.",
-      "examples": ["event_registration", "account_registration"]
+      "examples": [
+        "event_registration",
+        "account_registration"
+      ]
     },
     "sourceSystem": {
       "type": "string",
@@ -41,7 +43,10 @@
     "subject": {
       "type": "object",
       "description": "Who this event is about.",
-      "required": ["identifierType", "identifierValue"],
+      "required": [
+        "identifierType",
+        "identifierValue"
+      ],
       "additionalProperties": false,
       "properties": {
         "identifierType": {
@@ -51,6 +56,22 @@
         "identifierValue": {
           "type": "string"
         }
+      },
+      "if": {
+        "properties": {
+          "identifierType": {
+            "const": "email"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "identifierValue": {
+            "pattern": "^[^A-Z\\s@]+@[^A-Z\\s@]+\\.[^A-Z\\s@]+$",
+            "maxLength": 100,
+            "description": "Must be sent already lowercased and trimmed. Used as-is as the ingestion FIFO MessageGroupId (EventBridge can't transform it), so 'Jane@X.com' and 'jane@x.com' would otherwise be treated as two different people. Max 100 chars is EventBridge's MessageGroupId limit."
+          }
+        }
       }
     },
     "consent": {
@@ -59,7 +80,12 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["purpose", "status", "capturedAt", "captureMethod"],
+        "required": [
+          "purpose",
+          "status",
+          "capturedAt",
+          "captureMethod"
+        ],
         "additionalProperties": false,
         "properties": {
           "purpose": {
@@ -68,7 +94,12 @@
           },
           "status": {
             "type": "string",
-            "enum": ["opt_in", "opt_out", "granted", "withdrawn"]
+            "enum": [
+              "opt_in",
+              "opt_out",
+              "granted",
+              "withdrawn"
+            ]
           },
           "capturedAt": {
             "type": "string",
@@ -82,10 +113,52 @@
         }
       }
     },
+    "preferences": {
+      "type": "array",
+      "description": "Granular topic + channel choices captured as part of this event (e.g. from a preference centre). Distinct from consent: a delivery choice, not a legal permission. topic/channel are validated against the taxonomy at runtime, not enumerated here.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "topic",
+          "channel",
+          "status",
+          "capturedAt"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "topic": {
+            "type": "string",
+            "description": "What kind of communication, e.g. 'newsletter', 'event_invites'."
+          },
+          "channel": {
+            "type": "string",
+            "description": "Comms/delivery channel, e.g. 'email', 'sms', 'push'. Not to be confused with provenance.captureChannel."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "opt_in",
+              "opt_out",
+              "granted",
+              "withdrawn"
+            ]
+          },
+          "capturedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the user made this choice."
+          }
+        }
+      }
+    },
     "provenance": {
       "type": "object",
       "description": "Traceability data for where this event and its consent decisions came from.",
-      "required": ["sourceEventId", "captureChannel"],
+      "required": [
+        "sourceEventId",
+        "captureChannel"
+      ],
       "additionalProperties": false,
       "properties": {
         "sourceEventId": {
@@ -110,5 +183,18 @@
         }
       }
     }
-  }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "consent"
+      ]
+    },
+    {
+      "required": [
+        "preferences"
+      ]
+    }
+  ],
+  "$comment": "An event must carry at least one of consent[] or preferences[] (both may be present)."
 }
