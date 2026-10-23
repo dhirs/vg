@@ -150,6 +150,13 @@
           "capturedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "derivedFrom": {
+            "type": "string",
+            "enum": [
+              "purpose_withdrawal"
+            ],
+            "description": "Set when step 2 derived this item rather than the source sending it: a withdrawn purpose implies opt_out for every topic x channel under it."
           }
         }
       }

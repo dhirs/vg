@@ -86,7 +86,6 @@ const COMPANY_TYPES = [
 // Stub CRM: a local JSON file (git-ignored — it holds email addresses). Every registration sent
 // from the EMO or CL6 page adds its person if new; the real CRM replaces this later.
 const CRM_FILE = join(HERE, "data", "stub-crm.json");
-const DEMO_PASSWORD = "demo"; // sign-in is simulated: any user in the stub CRM + this password
 const DEMO_USER = { localId: "CL6-100234", email: "dheeraj.saxena@kwantsolutions.co.uk", firstName: "Dheeraj", lastName: "Saxena", company: "Kwant Solutions Ltd" };
 
 function loadCrm() {
@@ -285,7 +284,7 @@ app.use(express.static(join(HERE, "public")));
 app.get("/api/config", (req, res) => res.json({
   event: EVENT, firmSizes: FIRM_SIZES, companyTypes: COMPANY_TYPES, bus: BUS_NAME,
   taxonomy: {
-    purposes: TAXONOMY.purposeCodes.map(({ code, description, legalBasis, marketing = false }) => ({ code, description, legalBasis, marketing })),
+    purposes: TAXONOMY.purposeCodes.map(({ code, description, legalBasis }) => ({ code, description, legalBasis })),
     topics: TAXONOMY.topicCodes.map(({ code, description, purposeCode }) => ({ code, description, purposeCode })),
     channels: TAXONOMY.channels.map(({ code }) => code),
   },
@@ -347,14 +346,15 @@ const displayName = (u) => [u.firstName, u.lastName].filter(Boolean).join(" ") |
 
 app.get("/api/session", (req, res) => {
   const user = sessionOf(req) && crm.byLocalId(sessionOf(req).localId);
-  if (!user) return res.json({ signedIn: false, demo: { email: DEMO_USER.email, password: DEMO_PASSWORD } });
+  if (!user) return res.json({ signedIn: false, demo: { email: DEMO_USER.email } });
   res.json({ signedIn: true, user: { name: displayName(user), localId: user.localId } });
 });
 
+// Simulated sign-in: an email that's in the stub CRM is enough (no password).
 app.post("/api/login", (req, res) => {
-  const { email = "", password = "" } = req.body || {};
-  const user = crm.byEmail(String(email).trim().toLowerCase());
-  if (!user || password !== DEMO_PASSWORD) return res.status(401).json({ errors: ["Incorrect email or password."] });
+  const email = String((req.body || {}).email || "").trim().toLowerCase();
+  const user = crm.byEmail(email);
+  if (!user) return res.status(401).json({ errors: [`No account found for ${email || "that email"}. Register on the event or account page first.`] });
   const id = randomUUID();
   sessions.set(id, { localId: user.localId });
   res.setHeader("Set-Cookie", `cpms_session=${id}; HttpOnly; SameSite=Lax; Path=/`);

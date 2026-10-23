@@ -218,7 +218,7 @@ function renderPanels() {
   const { event } = s.sent;
   $("sent-body").innerHTML = `
     <p class="meta-line"><span>Bus <code>${esc(s.sent.bus)}</code></span><span>EventBridge id <code>${esc(s.sent.eventBridgeId)}</code></span><span>eventId <code>${esc(event.eventId)}</code></span></p>
-    ${s.sent.crmLocalId ? `<div class="callout info">Added to the stub CRM as <code>${esc(s.sent.crmLocalId)}</code> — sign in to the Preference centre with <b>${esc(event.subject.identifierValue)}</b> and password <code>demo</code> to manage these settings.</div>` : ""}
+    ${s.sent.crmLocalId ? `<div class="callout info">Added to the stub CRM as <code>${esc(s.sent.crmLocalId)}</code> — sign in to the Preference centre with <b>${esc(event.subject.identifierValue)}</b> to manage these settings.</div>` : ""}
     <pre class="code">${json(event)}</pre>`;
 
   if (s.status === "processing") {
@@ -355,9 +355,9 @@ async function loadPrefs() {
     const key = `${t.code}|${c}`;
     prefs[key] = purposes[t.purposeCode] && (key in explicit ? explicit[key] : c === "email");
   }
-  const marketingOn = TAX.purposes.some((p) => p.marketing && purposes[p.code]) || Object.values(prefs).some(Boolean);
-  pc.current = { purposes, prefs, optOutAll: !marketingOn };
-  pc.draft = { purposes: { ...purposes }, prefs: { ...prefs }, optOutAll: !marketingOn };
+  const anyOn = Object.values(purposes).some(Boolean) || Object.values(prefs).some(Boolean);
+  pc.current = { purposes, prefs, optOutAll: !anyOn };
+  pc.draft = { purposes: { ...purposes }, prefs: { ...prefs }, optOutAll: !anyOn };
 }
 
 function signInForm(demo) {
@@ -366,8 +366,7 @@ function signInForm(demo) {
     <p class="lead">You need to be signed in to see and change your preferences.</p>
     <form id="signin" class="signin" novalidate>
       <label class="field"><span class="label">Email address</span><input name="email" type="email" autocomplete="username" value="${esc(demo.email)}"><span class="error"></span></label>
-      <label class="field"><span class="label">Password</span><input name="password" type="password" autocomplete="current-password" value="${esc(demo.password)}"><span class="error"></span></label>
-      <div class="actions"><span class="hint">Simulated sign-in: any registered email + password <code>demo</code>.</span><button class="btn primary" type="submit">Sign in</button></div>
+      <div class="actions"><span class="hint">Simulated sign-in: any email you've registered with.</span><button class="btn primary" type="submit">Sign in</button></div>
     </form>`;
 }
 
@@ -377,10 +376,10 @@ document.addEventListener("submit", async (e) => {
   const form = e.target;
   try {
     await API("/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: form.email.value, password: form.password.value }) });
+      body: JSON.stringify({ email: form.email.value }) });
     route();
   } catch (err) {
-    fieldError(form.password, err.message);
+    fieldError(form.email, err.message);
   }
 });
 $("signout").addEventListener("click", async () => { await API("/api/logout", { method: "POST" }); location.hash = "#/preferences"; route(); });
@@ -389,34 +388,63 @@ $("signout").addEventListener("click", async () => { await API("/api/logout", { 
 const purposeOf = (code) => TAX.purposes.find((p) => p.code === code);
 const topicsOf = (purposeCode) => TAX.topics.filter((t) => t.purposeCode === purposeCode);
 const keysOf = (topicCode) => TAX.channels.map((c) => `${topicCode}|${c}`);
+const purposeKeys = (purposeCode) => topicsOf(purposeCode).flatMap((t) => keysOf(t.code));
 
-// Effective draft values: "opt out of all marketing" overrides the marketing purposes, and a
-// topic × channel is only on while its purpose is on.
-const draftPurpose = (code) => !(pc.draft.optOutAll && purposeOf(code).marketing) && pc.draft.purposes[code];
+// A purpose with topics is on exactly when at least one of its topic × channels is on:
+// deselecting the last one turns the purpose off; switching a purpose on with nothing
+// selected turns email on for its topics (the same default as a registration).
+function syncPurpose(purposeCode) {
+  const keys = purposeKeys(purposeCode);
+  if (!keys.length) return;
+  const anyOn = keys.some((k) => pc.draft.prefs[k]);
+  if (pc.draft.purposes[purposeCode] && !anyOn) {
+    if (pc.draft.justSwitchedOn === purposeCode) keys.filter((k) => k.endsWith("|email")).forEach((k) => { pc.draft.prefs[k] = true; });
+    else pc.draft.purposes[purposeCode] = false;
+  }
+  delete pc.draft.justSwitchedOn;
+  syncOptOut();
+}
+
+// Enabling anything while opted out leaves the opt-out: start from everything off, then the
+// caller switches on just what was enabled.
+function leaveOptOut() {
+  if (!pc.draft.optOutAll) return;
+  pc.draft.optOutAll = false;
+  for (const p of TAX.purposes) pc.draft.purposes[p.code] = false;
+  for (const k of Object.keys(pc.draft.prefs)) pc.draft.prefs[k] = false;
+}
+
+// No purpose left on = opted out of everything: the full opt-out switches itself on.
+function syncOptOut() {
+  if (TAX.purposes.every((p) => !pc.draft.purposes[p.code])) pc.draft.optOutAll = true;
+}
+
+// Effective draft values: the full opt-out overrides every purpose, and a topic × channel is
+// only on while its purpose is on.
+const draftPurpose = (code) => !pc.draft.optOutAll && pc.draft.purposes[code];
 const draftPref = (key) => {
   const topic = TAX.topics.find((t) => t.code === key.split("|")[0]);
   return !pc.draft.optOutAll && draftPurpose(topic.purposeCode) && pc.draft.prefs[key];
 };
 
 // Only what differs from what was loaded is sent — an explicit "off" for anything switched off.
-// Two saves send a full set instead of just the differences, because what the page loaded is
-// CPMS's view, not OneTrust's, and a changes-only "off" could leave behind something another
-// system switched on at OneTrust:
-//  - switching a purpose off opts out every topic × channel under it;
-//  - "opt out of all marketing" withdraws every marketing purpose and opts out every topic × channel.
+// A purpose switched off is sent as just the withdrawal: CPMS (step 2) derives opt_out for every
+// topic × channel under it, so the source never has to spell that out. The full opt-out sends
+// every purpose withdrawn (even ones that look off — the page shows CPMS's view, not OneTrust's).
 function changes() {
-  const consent = TAX.purposes.filter((p) => draftPurpose(p.code) !== pc.current.purposes[p.code])
-    .map((p) => ({ purpose: p.code, status: draftPurpose(p.code) ? "granted" : "withdrawn" }));
-  const prefs = new Map();
   const fullOptOut = pc.draft.optOutAll && !pc.current.optOutAll;
+  const consent = TAX.purposes.filter((p) => fullOptOut || draftPurpose(p.code) !== pc.current.purposes[p.code])
+    .map((p) => ({ purpose: p.code, status: draftPurpose(p.code) ? "granted" : "withdrawn" }));
+  const preferences = [];
   for (const t of TAX.topics) {
-    const purposeTurnedOff = pc.current.purposes[t.purposeCode] && !draftPurpose(t.purposeCode);
+    if (!draftPurpose(t.purposeCode)) continue; // covered by the purpose withdrawal (or already off)
     for (const key of keysOf(t.code)) {
-      if (fullOptOut || purposeTurnedOff) prefs.set(key, "opt_out");
-      else if (draftPref(key) !== pc.current.prefs[key]) prefs.set(key, draftPref(key) ? "opt_in" : "opt_out");
+      if (draftPref(key) !== pc.current.prefs[key]) {
+        const [topic, channel] = key.split("|");
+        preferences.push({ topic, channel, status: draftPref(key) ? "opt_in" : "opt_out" });
+      }
     }
   }
-  const preferences = [...prefs].map(([k, status]) => { const [topic, channel] = k.split("|"); return { topic, channel, status }; });
   return { consent, preferences, count: consent.length + preferences.length };
 }
 
@@ -457,7 +485,7 @@ function renderEditor() {
     ${sections}
     <div class="optout ${pc.draft.optOutAll ? "active" : ""} ${optChanged ? "changed" : ""}">
       <div><b>Opt out of all marketing contact</b>
-        <small>Stops all marketing emails, texts and notifications. You'll still receive messages about your account and events you've registered for.</small></div>
+        <small>Stops all emails, texts and notifications from us about everything above.</small></div>
       <label class="switch danger"><input type="checkbox" id="pc-optout" ${pc.draft.optOutAll ? "checked" : ""}><span></span></label>
     </div>
     <p class="source-note">Loaded from ${esc(p.source)} — what CPMS last sent to OneTrust for you.</p>
@@ -472,15 +500,25 @@ document.addEventListener("change", (e) => {
   if (e.target.id === "pc-optout") {
     pc.draft.optOutAll = e.target.checked;
     if (!pc.draft.optOutAll) {
-      // back in: marketing purposes on again (as they were, or on if they'd been off)
-      for (const p of TAX.purposes) if (p.marketing) pc.draft.purposes[p.code] = true;
+      if (!pc.current.optOutAll) {
+        // back to what was loaded
+        pc.draft = { purposes: { ...pc.current.purposes }, prefs: { ...pc.current.prefs }, optOutAll: false };
+      } else {
+        // was opted out when loaded: every purpose on, with email for their topics
+        for (const p of TAX.purposes) { pc.draft.purposes[p.code] = true; pc.draft.justSwitchedOn = p.code; syncPurpose(p.code); }
+      }
     }
     return renderEditor();
   }
   const sw = e.target.closest('input[data-kind="purpose"]');
   if (sw) {
+    if (sw.checked) leaveOptOut(); // enabling any purpose turns the full opt-out off
     pc.draft.purposes[sw.dataset.key] = sw.checked;
-    if (sw.checked && purposeOf(sw.dataset.key).marketing) pc.draft.optOutAll = false;
+    if (!sw.checked) syncOptOut();
+    if (sw.checked) {
+      pc.draft.justSwitchedOn = sw.dataset.key;
+      syncPurpose(sw.dataset.key);
+    }
     renderEditor();
   }
 });
@@ -491,15 +529,13 @@ document.addEventListener("click", async (e) => {
     const parent = TAX.topics.find((t) => t.code === key.split("|")[0]).purposeCode;
     if (!draftPref(key) && (pc.draft.optOutAll || !draftPurpose(parent))) {
       // choosing a channel under an off purpose / while opted out = "opt back in, to this"
-      if (pc.draft.optOutAll) {
-        pc.draft.optOutAll = false;
-        for (const p of TAX.purposes) if (p.marketing) pc.draft.purposes[p.code] = false;
-      }
+      leaveOptOut();
       pc.draft.purposes[parent] = true;
       for (const k of TAX.topics.filter((t) => t.purposeCode === parent).flatMap((t) => keysOf(t.code))) pc.draft.prefs[k] = false;
       pc.draft.prefs[key] = true;
     } else {
       pc.draft.prefs[key] = !pc.draft.prefs[key];
+      syncPurpose(parent); // deselecting the purpose's last topic × channel turns the purpose off
     }
     return renderEditor();
   }

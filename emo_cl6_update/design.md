@@ -203,6 +203,14 @@ references them.
        source sends it.
      - `header`/`provenance` get restructured (`correlationId` moves — falling back to
        `eventId` when absent — and `processedAt` is stamped here).
+     - **A withdrawn purpose implies its topics are off.** For each `consent[]` item with
+       status `withdrawn` / `opt_out`, step 2 adds `opt_out` for every topic × channel under
+       that purpose (from the taxonomy), at the withdrawal's `capturedAt`, marked
+       `derivedFrom: "purpose_withdrawal"`. An explicit choice for the same topic × channel
+       in the event wins. So sources only state the withdrawal, and the topic opt-outs still
+       reach the watermark, the records and the OneTrust receipt — which keeps OneTrust's
+       topic statuses consistent and stops old topic choices silently returning if the
+       purpose is later granted again.
      - `subject.identifierType` is normalized to one spelling (`member_id` / `MemberID` →
        `memberId`); `subjectId` is the identifier value as sent (emails are already
        lowercased — schema-enforced at step 1).
@@ -683,25 +691,33 @@ centre") with stubs; the real version needs CRM and OneTrust read access.
 5. **Show the current settings, editable** — grouped the way OneTrust stores them: each
    **purpose** (with an on/off switch), and under it its **topics**, each with
    email / SMS / push switches; plus a single **"Opt out of all marketing contact"**
-   switch. Switching a purpose **off** greys out its topics and sends the purpose
-   `withdrawn` plus `opt_out` for **every** topic × channel under it (a full set, for the
-   same reason as opt-out-all below); clicking a topic under an off purpose turns the
-   purpose back on. Other rules:
+   switch. Switching a purpose **off** greys out its topics and sends **just the purpose
+   withdrawal** — step 2 derives the topic × channel opt-outs; clicking a topic under an
+   off purpose turns the purpose back on. Other rules:
    - **Registration defaults.** A topic × channel with no explicit choice yet takes its
      value from the topic's purpose: the registration pages' "you will also receive
      marketing communications" means **email on** for every topic under a granted purpose;
      SMS and push stay off until chosen. *(Assumption — confirm.)*
-   - **Opt out of all marketing** switches every topic × channel off and withdraws the
-     purposes flagged `marketing: true` in the taxonomy (today `marketing_communications`
-     — all Vanguard marketing, on any channel; renamed from `marketing_email`, which wrongly
-     suggested email only). It's the one save that sends the **full set**, not just the
-     changes: every marketing purpose withdrawn and **every** topic × channel opted out,
-     even ones that look off already — because the page loaded CPMS's view, not
+   - **Opt out of all marketing contact** switches **every** purpose and every topic ×
+     channel off (the taxonomy only holds communication purposes, so "all" means all of
+     them — `marketing_communications`, renamed from `marketing_email` which wrongly
+     suggested email only, and `event_communications`). It's sent as **every purpose
+     withdrawn**, even ones that look off already — because the page loaded CPMS's view, not
      OneTrust's, and a changes-only opt-out could leave behind something another system
-     switched on at OneTrust.
-     Registered-event messages (`event_communications`) are not withdrawn and continue.
-   - **Switching a topic on** (re)grants its parent purpose, so a receipt can never say
-     "purpose withdrawn" and "topic on" at once.
+     switched on at OneTrust. Step 2 derives the opt-out for every topic × channel. Switching it back off restores what was loaded (or, if the person was already
+     opted out, every purpose on with email for their topics).
+   - **Enabling anything — a purpose or a channel — switches the full opt-out off**, starting
+     from everything off plus just what was enabled.
+   - **A purpose with topics is on exactly when at least one of its topic × channels is
+     on.** Switching a topic on (re)grants its parent purpose, and deselecting a purpose's
+     last topic × channel switches the purpose off (so saving sends it `withdrawn`). Switching
+     a purpose on with nothing selected turns email on for its topics (the registration
+     default). A receipt can never say "purpose withdrawn" and "topic on" at once, or
+     "purpose on" with no topics.
+   - **No purpose left on = full opt-out.** When every purpose is switched off (directly,
+     or by deselecting all their topics), "Opt out of all marketing contact" switches
+     itself on, so saving sends the full set: every purpose withdrawn and every topic ×
+     channel opted out. Clicking any channel afterwards opts back in to just that.
 6. **Save** — only what differs from what was loaded is sent, as a `source_event` with
    `eventType: preference_update`, `sourceSystem: cl6`,
    `captureMethod: preference_centre`. Switching something **off** is sent explicitly
@@ -728,8 +744,9 @@ may have changed OneTrust since.
   or CL6 page adds its person if new, with the next local ID (`CL6-100235`, …); it starts
   with one demo user (`dheeraj.saxena@kwantsolutions.co.uk`, `CL6-100234`). Kept out of S3
   on purpose: it stands in for an external CRM and isn't CPMS data.
-- **Sign-in** — simulated: any email in the stub CRM + password `demo`; an in-memory
-  session cookie.
+- **Sign-in** — simulated: any email in the stub CRM, no password (an unknown email gets
+  "No account found… register first"); an in-memory session cookie. The ownership checks
+  still apply to the signed-in email.
 
 ## Error handling rules
 
@@ -911,10 +928,10 @@ networking and extra storage before the flow is proven.
   exposes purposes directly; "opt out of all marketing" turns every topic off together
   with the purpose, and turning a topic on re-grants its purpose (see **Preference
   centre**).
-- **Is `event_invites` marketing?** It sits under `event_communications` (not flagged
-  marketing), so "opt out of all marketing" switches the invites topic off but leaves the
-  purpose — and reminders for registered events — in place. Confirm that split, and which
-  purposes count as marketing.
+- **Should reminders for events someone registered for survive "opt out of all"?** Today the
+  full opt-out withdraws `event_communications` too (it covers every purpose). If
+  registered-event reminders are service messages that must continue, they need to move
+  out of the preference centre's purposes.
 - **Receipts sent without `interactionDate`** — OneTrust's docs don't say how those are
   ordered. Moot for CPMS (the schema makes it required) but relevant if anything else
   posts to the same collection point.

@@ -1,13 +1,12 @@
 {
   "version": "1.0",
   "updatedAt": "2026-10-23T00:00:00Z",
-  "_note": "All OneTrust IDs below are MADE-UP TEST UUIDs (00000000-0000-4000-8000-…) so the pipeline can produce schema-valid receipts before tenant values exist. Replace them with the real IDs from the OneTrust tenant. The topic -> parent purpose and channel-as-custom-preference structure is an ASSUMPTION about the tenant setup (design.md -> Open items). 'marketing': true marks the purposes withdrawn by a preference centre's 'opt out of all marketing contact'.",
+  "_note": "All OneTrust IDs below are MADE-UP TEST UUIDs (00000000-0000-4000-8000-…) so the pipeline can produce schema-valid receipts before tenant values exist. Replace them with the real IDs from the OneTrust tenant. The topic -> parent purpose and channel-as-custom-preference structure is an ASSUMPTION about the tenant setup (design.md -> Open items).",
   "purposeCodes": [
     {
       "code": "marketing_communications",
       "oneTrustPurposeId": "00000000-0000-4000-8000-000000000101",
       "legalBasis": "consent",
-      "marketing": true,
       "description": "Marketing communications from Vanguard (market, product and service updates) on any channel."
     },
     {
