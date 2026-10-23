@@ -95,3 +95,36 @@ lives at root.
   script and pass the values to the `boto3` client explicitly; never print or echo secret
   values.
 - `.env.prod` holds live secrets — never commit it.
+
+## Running the test app (`emo_cl6_update/web/`)
+
+Local Node.js app with three flows in a left sidebar: **Event registration** (EMO),
+**Account registration** (CL6 / Vanguard 365) and **Preference centre** (signed-in user).
+
+**Start it:**
+
+```bash
+./emo_cl6_update/web/start.sh
+```
+
+Installs dependencies on first run, stops anything already on port 8600, starts the server
+and opens <http://localhost:8600>. Ctrl+C stops it. (Equivalent by hand:
+`cd emo_cl6_update/web && npm install && npm start`.)
+
+**Needs:** Node 20+, and the repo-root `.env.prod` (AWS keys + `AWS_BUCKET_NAME`) — the
+server reads it; the browser never sees credentials.
+
+**Nothing to start in AWS.** The bus, queues, Lambdas and state machine are already
+deployed and run on their own. Re-run the deploy scripts only after changing them:
+- `python3 emo_cl6_update/deploy/upload_assets.py` — after editing anything in `schemas/`
+  or `taxonomy/`
+- `python3 emo_cl6_update/deploy/setup_processing.py` — after editing a Lambda or the state
+  machine (it ends with an AccessDenied on the failure alarm until the IAM user gets
+  `cloudwatch:PutMetricAlarm`; everything before that is applied)
+- `python3 emo_cl6_update/deploy/setup_ingestion.py` — after editing the bus / rule / ingestion queue
+
+**Using it:** register on the EMO or CL6 page (any email) → that person is added to the
+stub CRM (`emo_cl6_update/web/data/stub-crm.json`, git-ignored) → sign in to the
+Preference centre with the same email (no password) to view and change their settings.
+After a server change, restart with the script; after a page change, a hard refresh
+(Cmd+Shift+R) is enough.
