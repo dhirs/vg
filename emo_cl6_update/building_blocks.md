@@ -63,6 +63,16 @@ Inventory of infrastructure components. For *why* decisions were made this way, 
 | Outbound request queue | SQS **FIFO**, `MessageGroupId = subjectId` | Holds complete OneTrust Consent Receipt requests (`method`, `url`, `headers`, `body`, `correlationId` — contract: `schemas/onetrust_request.schema.json`), sent by the dispatcher exactly as given, for later dispatch, since we don't have live paid API access yet. FIFO + per-subject grouping prevents the eventual dispatcher from reordering a subject's messages if it runs multiple concurrent workers. `cpms-sqs-outbound.fifo`: content-based dedup, high-throughput mode, 14-day retention (SQS max — undispatched requests expire after that), redrive to the outbound DLQ after 5 receives. |
 | Outbound DLQ | SQS FIFO `cpms-sqs-outbound-dlq.fifo` | Receives requests the dispatcher failed to deliver 5 times. FIFO because its source queue is FIFO. (Enqueue failures don't land here — they fail the run and SQS retries the event.) |
 
+## OneTrust authorization (not built yet)
+
+| Block | Type | What it does |
+|---|---|---|
+| Collection point (per capturing service) | OneTrust API-type collection point, e.g. **"Vanguard EMO"** | OneTrust's record of where consent was captured. Every receipt is posted through one and logged against it. Scoped to only the purposes that service collects. Configured in OneTrust, not AWS. |
+| Collection point → source mapping | Config (`cpms/config/`) | Maps `sourceSystem` → collection point (e.g. `cvent`, `kaltura` → `emo`). Step 4 tags each outbound message with it. |
+| Collection point token | Secrets Manager `cpms-secret-onetrust-cp-<collection point>` | The collection point's JWT (OneTrust `requestInformation`) — the credential that lets a receipt be posted through that collection point. Read only by the dispatcher; never written to SQS, S3, Lambda env vars or the repo. |
+| Receipt signing key | KMS asymmetric signing key `cpms-kms-onetrust-signing` | CPMS's private key for the optional `authorization: Bearer <JWT>` header (`sub` = the receipt's email). Non-exportable; the dispatcher asks KMS to sign. Its public key is registered in OneTrust so a leaked collection point token alone can't post receipts. |
+| Dispatcher | Lambda `cpms-lambda-dispatcher` | Reads `cpms-sqs-outbound.fifo`; for each message fetches the tagged collection point's token, replaces the `{{COLLECTION_POINT_JWT}}` placeholder, signs the authorization JWT via KMS, and POSTs to OneTrust. The only component that holds OneTrust credentials. |
+
 ## Observability
 
 | Block | Type | What it does |

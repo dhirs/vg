@@ -551,6 +551,98 @@ Splitting by `capturedAt` is required, not optional: a receipt can only carry on
 `interactionDate`, and stamping older items with a newer date would defeat OneTrust's
 out-of-order rule. Receipts with > 20 purposes are split further.
 
+## Authenticating to OneTrust
+
+### How OneTrust authenticates a consent receipt (from OneTrust's API reference)
+
+- **The collection point token is the credential.** Every receipt carries
+  `body.requestInformation` — the JWT of a OneTrust *collection point* (copied from the
+  collection point's Integrations tab, used unaltered). OneTrust: "In most cases, further
+  authorization is not required." There is no separate API key or login for this call.
+- **What a collection point is:** OneTrust's record of *where consent was captured* — a
+  website form, an app, an API integration. Each has its own token, and each receipt is
+  logged against the collection point it came through.
+- **Optional signed-JWT check.** OneTrust also accepts an `authorization: Bearer <JWT>`
+  header: a JWT *we* sign with a private key, which OneTrust verifies with a public key
+  registered in OneTrust. Its `sub` claim must match the receipt's `identifier` (the
+  email).
+
+### The risk
+
+The collection point token behaves like a password for that collection point: **anyone
+who has it can post receipts — for any email — through that collection point.** What
+limits it today: it's scoped to one collection point and that collection point's purposes,
+and every receipt is logged against it so misuse is traceable. For OneTrust's own web
+collection points the token sits in the public page, so OneTrust doesn't treat it as a
+strong secret on its own. For a server-side integration like CPMS, nobody outside needs to
+see it — so we can, and should, treat it as one.
+
+### Decisions
+
+- **One API-type collection point per capturing service, not one for all of CPMS.** The
+  collection point records where consent was captured, so it should be the service that
+  captured it — e.g. **EMO** for Cvent and Kaltura registrations — not CPMS, which only
+  relays. CPMS posts receipts *on that service's behalf* with that collection point's
+  token. Each collection point is scoped to only the purposes that service collects.
+  *(API-type is required anyway: `TransactionType` and `interactionDate` are only
+  supported on API collection points.)*
+- **Which collection point a receipt uses is decided by `sourceSystem`** (e.g. `cvent`,
+  `kaltura` → `emo`), from a small mapping in config — not hardcoded.
+- **Turn on signed-JWT verification** on every CPMS-used collection point (if the OneTrust
+  plan offers it). Then a leaked collection point token alone is useless: OneTrust also
+  requires a JWT signed by CPMS's private key, with `sub` = the receipt's email.
+- **The private signing key lives in AWS KMS** (asymmetric signing key) — it can't be
+  exported or copied; the dispatcher asks KMS to sign. OneTrust gets the matching public key.
+- **Collection point tokens live in AWS Secrets Manager**, one secret per collection point
+  — not in `.env.prod`, Lambda environment variables, the repo, SQS, or S3.
+- **Only the dispatcher touches either.** Step 4 does **not** put the real token in the
+  receipt: it writes the placeholder `"requestInformation": "{{COLLECTION_POINT_JWT}}"`
+  and records which collection point to use. At send time the dispatcher fetches that
+  collection point's token from Secrets Manager, swaps it in, signs the
+  `authorization` JWT with KMS, and posts. So the token and signature never land in the
+  outbound queue, the success records, or the preference form's OneTrust tab.
+  Trade-off accepted: the queued message is the final request except for that one
+  value, filled in at send time.
+
+### Worked example: EMO as the collection point
+
+The **Vanguard EMO service** captures Cvent and Kaltura registrations and sends them to
+CPMS. In OneTrust it is set up as the collection point **"Vanguard EMO"** (API type,
+scoped to e.g. `marketing_email` and `event_communications`).
+
+1. **Capture.** Jane registers for a webinar in Cvent and ticks "newsletter by email". EMO
+   picks up the registration and sends CPMS a `source_event` with
+   `sourceSystem: "cvent"`. *EMO never talks to OneTrust and never holds a OneTrust token.*
+2. **Steps 1–3** validate, transform and stale-check it as usual.
+3. **Step 4** builds the receipt. From the mapping, `cvent` → collection point `emo`, so
+   the outbound message is tagged `collectionPoint: "emo"`, and the body carries
+   `"requestInformation": "{{COLLECTION_POINT_JWT}}"` — no real token.
+4. **Steps 5–7** queue it and record it. Anyone looking at the queue, the S3 success
+   record, or the form's OneTrust tab sees the placeholder, not the token.
+5. **Dispatcher** (not built yet) takes the message and:
+   - fetches the **EMO** collection point token from Secrets Manager
+     (`cpms-secret-onetrust-cp-emo`) and puts it in `requestInformation`;
+   - asks KMS (`cpms-kms-onetrust-signing`) to sign a short-lived JWT
+     `{ sub: "jane@x.com", iat, exp }` and sends it as `authorization: Bearer …`;
+   - POSTs to OneTrust.
+6. **OneTrust** checks the token → "this is the Vanguard EMO collection point"; checks the
+   signature against CPMS's registered public key → "signed by CPMS"; checks `sub` equals
+   `identifier` → "about Jane". Only then does it record the receipt — **under the EMO
+   collection point**, so Jane's record shows her consent was captured via EMO.
+
+**If the EMO token leaked:** an attacker could build a receipt with it, but without a JWT
+signed by CPMS's KMS key (which can't be extracted), OneTrust rejects it. Without
+signed-JWT verification turned on, the same leak would let them write consent for any
+email through the EMO collection point — which is why that setting matters.
+
+### Not built yet / to change
+
+- Step 4 still writes the dummy token straight into `requestInformation` and doesn't tag
+  `collectionPoint`; `onetrust_request.schema.json` needs a `collectionPoint` envelope
+  field and to accept the placeholder. Changes when the dispatcher is built.
+- The `sourceSystem` → collection point mapping, the Secrets Manager secrets, the KMS key
+  and the dispatcher don't exist yet.
+
 ## Error handling rules
 
 - **DLQ is reserved for network/connectivity failures only** (e.g. SQS calls timing out
@@ -598,6 +690,8 @@ policies scope to `cpms-*` and makes every project resource easy to find.
 | `sfn` | Step Functions state machine |
 | `role` | IAM role (`cpms-role-<name of what assumes it>`) |
 | `alarm` | CloudWatch alarm |
+| `secret` | Secrets Manager secret |
+| `kms` | KMS key (alias) |
 | `elasticache` | ElastiCache cluster (prod only) |
 | `vpc` | VPC (prod only) |
 
@@ -625,6 +719,9 @@ S3 "components" are `cpms/<store>/` prefixes inside the existing bucket.
 | Outbound FIFO queue | `cpms-sqs-outbound.fifo` |
 | Outbound DLQ | `cpms-sqs-outbound-dlq.fifo` |
 | Failure alarm | `cpms-alarm-failures` |
+| Collection point token (one per collection point) | `cpms-secret-onetrust-cp-<collection point>`, e.g. `cpms-secret-onetrust-cp-emo` |
+| Receipt signing key | `cpms-kms-onetrust-signing` (alias) |
+| Dispatcher | `cpms-lambda-dispatcher` |
 | Taxonomy updater (prod only) | `cpms-lambda-taxonomy-updater` |
 | Taxonomy cache (prod only) | `cpms-elasticache-taxonomy` |
 | VPC (prod only) | `cpms-vpc` |
@@ -680,10 +777,13 @@ networking and extra storage before the flow is proven.
 - **Real OneTrust IDs.** The taxonomy's `oneTrustPurposeId`/`oneTrustTopicId`/
   `oneTrustChannelId` values (`PC-1001`, …) are placeholders; OneTrust requires UUIDs from
   the tenant. Step 4's validation will (correctly) reject every receipt until they're replaced.
-- **Collection point(s) and their JWT.** Which OneTrust collection point(s) receive CPMS
-  receipts — one for all sources, or one per source — and where step 4 reads the JWT from
-  (it shouldn't live in the repo). Collection point must be **API-type**:
-  `TransactionType` and `interactionDate` are only supported there.
+- **Collection points — decided in principle** (one API-type collection point per
+  capturing service, e.g. EMO; tokens in Secrets Manager; dispatcher injects them — see
+  **Authenticating to OneTrust**). Still to confirm with someone with OneTrust access:
+  (a) does the OneTrust plan support signed-JWT (`authorization` header) verification on
+  collection points, and how is it switched on; (b) can a collection point token be
+  revoked/regenerated if it leaks; (c) the final list of capturing services and which
+  `sourceSystem`s map to each.
 - **How topics and channels are configured in OneTrust.** Built against an *assumed*
   setup (topic → parent purpose; channels as one custom preference per topic, one option
   per channel — see **Outbound message format**). Confirm against the tenant; if it
