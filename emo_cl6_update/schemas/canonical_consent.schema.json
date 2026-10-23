@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vanguard.internal/schemas/canonical_consent.schema.json",
+  "title": "CanonicalConsentRecord",
+  "description": "Internal canonical shape every source_event is transformed into (step 2) and validated against (step 3). Carries both consent (purpose-based, compliance) and preferences (topic+channel, granular choice) as distinct concepts. purposeCode/topicCode/channel are intentionally free strings here, not enums — validity is checked at runtime against the external taxonomy reference (S3 source of truth, read via Redis), so new codes are a data change, not a schema change.",
+  "type": "object",
+  "required": [
+    "header",
+    "subject",
+    "consent",
+    "preferences",
+    "provenance"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "header": {
+      "type": "object",
+      "description": "Pipeline/envelope metadata. Kept separate from subject so envelope changes don't ripple into consent/preference mapping logic.",
+      "required": ["schemaVersion", "eventId", "eventType", "sourceSystem", "correlationId", "processedAt"],
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "type": "string",
+          "description": "Version of this canonical contract, e.g. '1.0'."
+        },
+        "eventId": {
+          "type": "string",
+          "description": "Carried from the source event's eventId."
+        },
+        "eventType": {
+          "type": "string",
+          "description": "Carried from the source event, e.g. 'event_registration', 'account_registration'."
+        },
+        "sourceSystem": {
+          "type": "string",
+          "description": "Carried from the source event, e.g. 'cvent', 'vanguard-portal'."
+        },
+        "correlationId": {
+          "type": "string",
+          "description": "Carried from source_event.provenance.correlationId, if present."
+        },
+        "processedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the Step Function processed this event into canonical form. Distinct from occurredAt/capturedAt, which describe the source-side timing."
+        }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "description": "Who the consent/preferences apply to.",
+      "required": ["subjectId", "identifierType"],
+      "additionalProperties": false,
+      "properties": {
+        "subjectId": {
+          "type": "string",
+          "description": "Normalized identifier value."
+        },
+        "identifierType": {
+          "type": "string",
+          "description": "Normalized identifier type, e.g. 'email', 'memberId', 'clientId'. Sources may spell this inconsistently (e.g. 'member_id' vs 'memberId') — transform normalizes to one fixed spelling."
+        }
+      }
+    },
+    "consent": {
+      "type": "array",
+      "description": "Legal/compliance permission decisions, one per purpose.",
+      "items": {
+        "type": "object",
+        "required": ["purposeCode", "status", "capturedAt"],
+        "additionalProperties": false,
+        "properties": {
+          "purposeCode": {
+            "type": "string",
+            "description": "Taxonomy-checked purpose code (not enumerated here — see taxonomy reference)."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["opt_in", "opt_out", "granted", "withdrawn"]
+          },
+          "capturedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "legalBasis": {
+            "type": "string",
+            "description": "Optional. Legal basis for this purpose (e.g. 'consent', 'contract', 'legitimate_interest'), derived during transform from the taxonomy mapping rather than sent by the source."
+          }
+        }
+      }
+    },
+    "preferences": {
+      "type": "array",
+      "description": "Granular topic+channel choices. Distinct from consent: a preference is a delivery choice, not necessarily a legal permission.",
+      "items": {
+        "type": "object",
+        "required": ["topicCode", "channel", "status", "capturedAt"],
+        "additionalProperties": false,
+        "properties": {
+          "topicCode": {
+            "type": "string",
+            "description": "Taxonomy-checked topic code (not enumerated here — see taxonomy reference)."
+          },
+          "channel": {
+            "type": "string",
+            "description": "Comms/delivery channel, e.g. 'email', 'sms'. Taxonomy-checked. Not to be confused with provenance.captureChannel."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["opt_in", "opt_out", "granted", "withdrawn"]
+          },
+          "capturedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "description": "Traceability data, carried forward from source_event.provenance for the OneTrust record/audit trail.",
+      "required": ["sourceEventId", "captureChannel"],
+      "additionalProperties": false,
+      "properties": {
+        "sourceEventId": {
+          "type": "string"
+        },
+        "captureChannel": {
+          "type": "string",
+          "description": "How the user interacted when this event was captured (web/mobile/in_person). Capture context, not a comms channel."
+        },
+        "locale": {
+          "type": "string"
+        },
+        "policyVersion": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

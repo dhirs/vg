@@ -1,0 +1,83 @@
+# Repo guide
+
+OneTrust integration system (CPMS — Consent and Preference Management Service). Sources
+(secure portal, Cvent, Kaltura, etc.) emit consent/preference events; AWS pipelines
+validate, normalize, and generate OneTrust API requests. We don't have paid OneTrust API
+access yet, so requests are generated correctly and queued rather than sent live.
+
+## Folder hierarchy
+
+This repo holds **multiple flows**, each in its own top-level folder. A flow is a
+self-contained piece of the overall CPMS system — e.g. "take a source trigger and turn it
+into a OneTrust update" is one flow; "fan out a OneTrust-side update to other systems" is
+a different flow. Each flow folder is internally structured the same way:
+
+```
+<flow_name>/
+  design.md           - decisions and why, for this flow
+  building_blocks.md  - infrastructure parts list, for this flow
+  schemas/             - JSON Schema contracts used by this flow
+  diagrams/            - .drawio diagrams for this flow
+```
+
+Root only holds this `CLAUDE.md`, `README.md`, and the flow folders — no design content
+lives at root.
+
+### Current flows
+
+- **`emo_cl6_update/`** — source triggers → OneTrust consent/preference update. Covers:
+  EventBridge ingestion, the per-source Step Function (validate → transform → canonical →
+  build OneTrust payload → enqueue), the taxonomy reference/cache, and success/fail
+  recording. This is the flow designed so far.
+
+- *(planned, not yet started)* **consent update fanout** — everything that needs to
+  happen when an update is triggered/confirmed inside OneTrust (e.g. notifying other
+  downstream systems). Will get its own folder with the same `design.md` /
+  `building_blocks.md` / `schemas/` structure when work starts.
+
+## What's inside a flow folder
+
+- **`design.md`** — the living design doc for that flow. Captures *decisions and why*:
+  the end-to-end flow, each Step Function state, error-handling rules, caching
+  architecture, and what was explicitly decided against and why. Read this first for
+  architectural context on a given flow. Has an "Open items" section — check it before
+  assuming something is settled.
+
+- **`building_blocks.md`** — the parts list for that flow. Every infrastructure component
+  (Lambdas, S3 buckets, SQS queues, ElastiCache, Step Function states) with a one-line
+  description of what it does. No rationale here — that's in `design.md`. Use this for
+  "what exists" or "what do I need to provision," not "why does it work this way."
+
+- **`schemas/`** — JSON Schema contracts for that flow (e.g. `source_event.schema.json`
+  in `emo_cl6_update/`). These are both the documentation for whoever integrates with the
+  flow *and* the literal input to the validation Lambdas — same artifact, so contract and
+  enforcement can't drift apart.
+
+- **`diagrams/`** — `.drawio` architecture diagrams for that flow (e.g.
+  `architecture.drawio` in `emo_cl6_update/`), editable in draw.io/diagrams.net. Visual
+  companion to `design.md`, not a replacement — rationale still lives in the doc.
+
+- **`README.md`** (root) — placeholder, not yet written up.
+
+## Conventions for this repo
+
+- Each flow gets its own folder with its own `design.md` / `building_blocks.md` /
+  `schemas/` — don't mix flows into one design doc.
+- Design decisions go in that flow's `design.md`, not scattered across chat — keep it
+  current as things get agreed on.
+- Infrastructure components go in that flow's `building_blocks.md` as they're introduced.
+- Schemas are real JSON Schema files under `schemas/`, not samples/prose — they double as
+  runtime validation input, not just documentation.
+- Taxonomy value sets (`purposeCode`/`topicCode`/`channel`) are never hardcoded as schema
+  `enum`s — they're validated against an external taxonomy reference (S3 source of truth
+  → Redis read path) so new codes are a data change, not a schema/code change.
+
+## Working with AWS
+
+- Interact with AWS using inline Python (`boto3`), **not the AWS CLI** — e.g. a
+  `python3 - <<'EOF' ... EOF` heredoc or a short throwaway script.
+- Credentials and settings come from `.env.prod` at repo root (`AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`, `AWS_BUCKET_NAME`). Parse the file in the
+  script and pass the values to the `boto3` client explicitly; never print or echo secret
+  values.
+- `.env.prod` holds live secrets — never commit it.

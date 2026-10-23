@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vanguard.internal/schemas/source_event.schema.json",
+  "title": "SourceEvent",
+  "description": "Generic envelope any source system sends when a consent-relevant action happens (event registration, new account registration, etc). Kept deliberately minimal so source owners have a low bar to integrate.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "eventType",
+    "sourceSystem",
+    "occurredAt",
+    "subject",
+    "consent",
+    "provenance"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "description": "Version of this contract the event was produced against, e.g. '1.0'."
+    },
+    "eventId": {
+      "type": "string",
+      "description": "Unique ID for this event instance, assigned by the source. Used for traceability, not dedup."
+    },
+    "eventType": {
+      "type": "string",
+      "description": "What kind of thing happened on the source side, e.g. 'event_registration', 'account_registration'.",
+      "examples": ["event_registration", "account_registration"]
+    },
+    "sourceSystem": {
+      "type": "string",
+      "description": "Name of the system sending the event, e.g. 'cvent', 'vanguard-portal', 'kaltura'."
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the underlying action happened on the source side."
+    },
+    "subject": {
+      "type": "object",
+      "description": "Who this event is about.",
+      "required": ["identifierType", "identifierValue"],
+      "additionalProperties": false,
+      "properties": {
+        "identifierType": {
+          "type": "string",
+          "description": "Type of identifier provided, e.g. 'email', 'memberId', 'clientId'."
+        },
+        "identifierValue": {
+          "type": "string"
+        }
+      }
+    },
+    "consent": {
+      "type": "array",
+      "description": "One or more consent decisions captured as part of this event.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["purpose", "status", "capturedAt", "captureMethod"],
+        "additionalProperties": false,
+        "properties": {
+          "purpose": {
+            "type": "string",
+            "description": "What the consent is for, e.g. 'marketing_email', 'event_communications'."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["opt_in", "opt_out", "granted", "withdrawn"]
+          },
+          "capturedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the user actually made this consent decision (may differ from occurredAt)."
+          },
+          "captureMethod": {
+            "type": "string",
+            "description": "How the consent was captured, e.g. 'web_form_checkbox', 'registration_form', 'implicit'."
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "description": "Traceability data for where this event and its consent decisions came from.",
+      "required": ["sourceEventId", "captureChannel"],
+      "additionalProperties": false,
+      "properties": {
+        "sourceEventId": {
+          "type": "string",
+          "description": "The ID of this record in the source system itself, e.g. a Cvent registration ID."
+        },
+        "captureChannel": {
+          "type": "string",
+          "description": "How the user interacted when this event was captured, e.g. 'web', 'mobile', 'in_person'. Not to be confused with a comms/preference channel (email, sms) — this is about capture context, not delivery."
+        },
+        "locale": {
+          "type": "string",
+          "description": "e.g. 'en-US'."
+        },
+        "policyVersion": {
+          "type": "string",
+          "description": "Version/ID of the privacy notice or terms the user agreed to, if applicable. Lives here rather than per-consent-item since one event's consent decisions are typically captured under a single policy version."
+        },
+        "correlationId": {
+          "type": "string",
+          "description": "Shared ID across systems this event also went to (e.g. Cvent, Kaltura, CPMS) for cross-system tracing."
+        }
+      }
+    }
+  }
+}

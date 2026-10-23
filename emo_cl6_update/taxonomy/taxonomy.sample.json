@@ -1,0 +1,61 @@
+{
+  "version": "1.0",
+  "updatedAt": "2026-10-23T00:00:00Z",
+  "purposeCodes": [
+    {
+      "code": "marketing_email",
+      "oneTrustPurposeId": "PC-1001",
+      "legalBasis": "consent",
+      "description": "General marketing emails (newsletters, promotions)."
+    },
+    {
+      "code": "event_communications",
+      "oneTrustPurposeId": "PC-1002",
+      "legalBasis": "consent",
+      "description": "Communications tied to a specific event registration (reminders, follow-ups)."
+    },
+    {
+      "code": "data_sharing_partners",
+      "oneTrustPurposeId": "PC-1003",
+      "legalBasis": "legitimate_interest",
+      "description": "Sharing data with third-party partners (e.g. Cvent, Kaltura) for event delivery."
+    },
+    {
+      "code": "account_servicing",
+      "oneTrustPurposeId": "PC-1004",
+      "legalBasis": "contract",
+      "description": "Operational communications required to service an account (not marketing)."
+    }
+  ],
+  "topicCodes": [
+    {
+      "code": "product_updates",
+      "oneTrustTopicId": "TP-2001",
+      "description": "Updates about product features and releases."
+    },
+    {
+      "code": "event_invites",
+      "oneTrustTopicId": "TP-2002",
+      "description": "Invitations to upcoming online/in-person events."
+    },
+    {
+      "code": "newsletter",
+      "oneTrustTopicId": "TP-2003",
+      "description": "Periodic newsletter digest."
+    }
+  ],
+  "channels": [
+    {
+      "code": "email",
+      "oneTrustChannelId": "CH-3001"
+    },
+    {
+      "code": "sms",
+      "oneTrustChannelId": "CH-3002"
+    },
+    {
+      "code": "push",
+      "oneTrustChannelId": "CH-3003"
+    }
+  ]
+}
