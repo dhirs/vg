@@ -32,7 +32,7 @@ Inventory of infrastructure components. For *why* decisions were made this way, 
 | Build OneTrust receipts | Lambda | Step 4. Turns the stale-filtered canonical record into complete OneTrust Consent Receipt requests — one per distinct `capturedAt` (a receipt has a single `interactionDate`), ≤ 20 purposes each — translating codes → OneTrust UUIDs via the taxonomy. **Validates every request it built** against `schemas/onetrust_request.schema.json` before returning — the only check before OneTrust, since OneTrust's API does no data-type validation. Mapping in `design.md` → "Outbound message format". `cpms-lambda-build-payload`, code in `lambdas/build_payload/`. Host + collection point JWT from `.env.prod` (dummy until set). |
 | Enqueue request | Step Functions `Map` (MaxConcurrency 1) + native SQS integration | Step 5. `SendMessage` directly from the state machine — no Lambda — one message per request, strictly in order, to `cpms-sqs-outbound.fifo`, `MessageGroupId = subjectId`. Failure after retries fails the run (SQS retries the event). |
 | Advance watermark | Lambda | Step 6. After a successful enqueue, merges the sent items' `capturedAt` into the watermark object via conditional `PutObject` (`If-Match` ETag / `If-None-Match: *`); re-reads and retries on 412. Merge is monotonic (never moves a watermark back). `cpms-lambda-advance-watermark`, code in `lambdas/advance_watermark/`; shares `lambdas/shared/watermark.py` with step 3. |
-| Write success record | Lambda | Step 7. Writes the full record (event, canonical, OneTrust payload, status `sent` / `skipped_stale`) to the success bucket. |
+| Write success record | Step Functions native S3 integration | Step 7. Writes the run's full state + outcome (`sent` / `skipped_stale`) to `cpms/success/<eventId>/<run>.json` — no Lambda. Keyed by eventId so results can be looked up from the event. |
 
 ## Taxonomy reference + cache
 
@@ -51,8 +51,8 @@ Inventory of infrastructure components. For *why* decisions were made this way, 
 
 | Block | Type | What it does |
 |---|---|---|
-| Fail bucket | S3 | One record per data/logic failure (schema, content, canonical, payload build/validate) — includes the error detail. Paired with a CloudWatch alarm, not a DLQ. |
-| Success bucket | S3 | One record per successful run — event, canonical payload, generated OneTrust payload, timestamp. |
+| Fail bucket | S3 (dev: `cpms/fail/<eventId>/<run>.json`) | One record per data/logic failure (schema, content, canonical, payload build/validate) — includes the error detail. Paired with a CloudWatch alarm, not a DLQ. |
+| Success bucket | S3 (dev: `cpms/success/<eventId>/<run>.json`) | One record per successful run — event, canonical payload, generated OneTrust payload, timestamp. |
 | Watermark bucket | S3 (dev: `cpms/watermarks/` prefix in the project bucket) | One JSON object per subject (`watermarks/<sha256(subjectId)>.json`) holding the last-sent `capturedAt` per consent/preference item. Read by step 3, written by step 6. Needed because FIFO only preserves *arrival* order: without it, an older decision that arrives late (batch export, replay) would be sent after a newer one and roll it back at OneTrust — e.g. re-opting someone in after they opted out. See `design.md` → "Out-of-order arrival". Versioning optional (gives an audit trail of watermark moves). |
 | Schema store | S3 | Holds `source_event.schema.json` (and, once written, the canonical schema) — loaded by validation Lambdas. |
 

@@ -7,7 +7,8 @@ Idempotent: creates what's missing, updates code/config/definition on what exist
 State machine today:
   1 ValidateSource -> 2 TransformCanonical -> 3 FilterStale -> all stale? -> "skipped_stale"
      no -> 4 BuildPayload -> 5 Enqueue (each request, in order) -> 6 AdvanceWatermark -> "sent"
-  (7 WriteSuccess not built yet)
+  "sent" / "skipped_stale" -> 7 WriteSuccess (cpms/success/<eventId>/<run>.json)
+  any data/logic failure  -> cpms/fail/<eventId>/<run>.json -> metric -> "rejected"
 OneTrust host / collection point JWT come from ONETRUST_HOST / ONETRUST_COLLECTION_POINT_JWT in
 .env.prod; until those exist, a trial host and a dummy JWT are used (receipts are queued, not sent).
   any step failing on data/logic -> mark failedStep -> write cpms/fail/<run>.json -> metric -> "rejected"
@@ -155,7 +156,7 @@ def failed(step):
 def definition(arns):
     verdict = {"valid.$": "$.Payload.valid", "errors.$": "$.Payload.errors"}
     return {
-        "Comment": "CPMS consent sync — steps 1-6 built; 7 pending. See design.md -> Step Function states.",
+        "Comment": "CPMS consent sync — steps 1-7. See design.md -> Step Function states.",
         "StartAt": "ValidateSource",
         "States": {
             # Step 1 — source sent bad data?
@@ -180,7 +181,8 @@ def definition(arns):
             "SkippedStale": {
                 "Type": "Pass",
                 "Parameters": {"outcome": "skipped_stale", "dropped.$": "$.staleCheck.dropped", "eventId.$": "$.canonical.record.header.eventId"},
-                "End": True,
+                "ResultPath": "$.result",
+                "Next": "WriteSuccess",
             },
             # Step 4 — build OneTrust receipt requests, validated against onetrust_request.schema.json inside the Lambda
             "BuildPayload": lambda_task(arns["cpms-lambda-build-payload"], "$.staleCheck.record", "$.payload",
@@ -218,24 +220,44 @@ def definition(arns):
             "SentWatermarkNotAdvanced": {
                 "Type": "Pass",
                 "Parameters": {"outcome": "sent", "warning": "watermark not advanced", "error.$": "$.error",
-                               "requestsQueued.$": "States.ArrayLength($.payload.requests)"},
-                "End": True,
+                               "requestsQueued.$": "States.ArrayLength($.payload.requests)",
+                               "requests.$": "$.payload.requests", "dropped.$": "$.staleCheck.dropped"},
+                "ResultPath": "$.result",
+                "Next": "WriteSuccess",
             },
             "Sent": {
                 "Type": "Pass",
-                "Parameters": {"outcome": "sent", "note": "step 7 not built yet",
+                "Parameters": {"outcome": "sent",
                                "requestsQueued.$": "States.ArrayLength($.payload.requests)",
                                "requests.$": "$.payload.requests", "dropped.$": "$.staleCheck.dropped",
                                "watermarkAdvanced.$": "$.watermark.result.advanced"},
-                "End": True,
+                "ResultPath": "$.result",
+                "Next": "WriteSuccess",
             },
+            # Step 7 — the run's full record (source event, canonical record, requests, outcome), keyed by eventId
+            "WriteSuccess": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
+                "Parameters": {
+                    "Bucket": bucket,
+                    "Key.$": f"States.Format('{PREFIX}/success/{{}}/{{}}.json', $.recordId, $$.Execution.Name)",
+                    "Body.$": "$",
+                    "ContentType": "application/json",
+                },
+                "ResultPath": None,
+                "Retry": [{"ErrorEquals": ["States.ALL"], "IntervalSeconds": 1, "MaxAttempts": 3, "BackoffRate": 2}],
+                # the decision is already queued (or correctly skipped); a missing record must not re-run the event
+                "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.recordError", "Next": "Done"}],
+                "Next": "Done",
+            },
+            "Done": {"Type": "Pass", "OutputPath": "$.result", "End": True},
             # Shared fail path for data/logic failures
             "RecordFailure": {
                 "Type": "Task",
                 "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
                 "Parameters": {
                     "Bucket": bucket,
-                    "Key.$": f"States.Format('{PREFIX}/fail/{{}}.json', $$.Execution.Name)",
+                    "Key.$": f"States.Format('{PREFIX}/fail/{{}}/{{}}.json', $.recordId, $$.Execution.Name)",
                     # pass the object itself: the SDK integration serializes it to JSON (JsonToString would double-encode)
                     "Body.$": "$",
                     "ContentType": "application/json",
@@ -258,7 +280,7 @@ def definition(arns):
             "Rejected": {
                 "Type": "Pass",
                 "Parameters": {"outcome": "rejected", "failedStep.$": "$.failedStep",
-                               "failRecord.$": f"States.Format('s3://{bucket}/{PREFIX}/fail/{{}}.json', $$.Execution.Name)"},
+                               "failRecord.$": f"States.Format('s3://{bucket}/{PREFIX}/fail/{{}}/{{}}.json', $.recordId, $$.Execution.Name)"},
                 "End": True,
             },
             "InfraFailure": {"Type": "Fail", "Error": "InfraFailure", "Cause": "AWS-side failure after retries; SQS will retry the message"},
@@ -326,7 +348,8 @@ except logs.exceptions.ResourceAlreadyExistsException:
     pass
 sfn_role = role("cpms-role-sfn-consent-sync", "states.amazonaws.com", [
     {"Effect": "Allow", "Action": "lambda:InvokeFunction", "Resource": [a for f in step_arns.values() for a in (f, f"{f}:*")]},
-    {"Effect": "Allow", "Action": "s3:PutObject", "Resource": f"arn:aws:s3:::{bucket}/{PREFIX}/fail/*"},
+    {"Effect": "Allow", "Action": "s3:PutObject",
+     "Resource": [f"arn:aws:s3:::{bucket}/{PREFIX}/fail/*", f"arn:aws:s3:::{bucket}/{PREFIX}/success/*"]},
     {"Effect": "Allow", "Action": "sqs:SendMessage", "Resource": outbound_arn},
     {"Effect": "Allow", "Action": "cloudwatch:PutMetricData", "Resource": "*",
      "Condition": {"StringEquals": {"cloudwatch:namespace": METRIC_NAMESPACE}}},

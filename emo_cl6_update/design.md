@@ -56,6 +56,16 @@ consent and provenance data (not deferred to later).
 }
 ```
 
+- **What a source sends depends on whether the person already has settings:**
+  - **New registration** (`eventType: account_registration`): only what the user
+    selected, all `opt_in`. Nothing exists yet to overwrite, so unselected items are
+    simply "not chosen" — no implicit opt-outs. Selecting a channel with all its topics
+    sends one item per topic; selecting one topic on one channel sends exactly one item.
+  - **Update** (`eventType: preference_update`, not built yet): load the person's current
+    settings from OneTrust first, then send only what **changed** — `opt_in` for things
+    switched on, explicit `opt_out` for things switched off. Needs a OneTrust read path
+    and authentication of the person — see **Open items**.
+  - Either way the pipeline is the same: it builds receipts from whatever items arrive.
 - **Emails must be sent lowercased and trimmed** (`identifierType: "email"` →
   `identifierValue` must match a no-uppercase, no-whitespace email pattern, max 100
   chars; enforced via `if/then`). Reason: the email is used as-is as the ingestion FIFO
@@ -184,7 +194,7 @@ topics later with minimal downstream impact.
      in dev), keeping its ETag. Missing object = new subject, nothing is stale.
    - Drops every `consent[]` / `preferences[]` item whose `capturedAt` is **≤** the stored
      `capturedAt` for that item key.
-   - All items dropped → run ends as **`skipped_stale`** (recorded by step 7 once built).
+   - All items dropped → run ends as **`skipped_stale`** (recorded by step 7).
      Not a failure, no alarm — it's an expected outcome.
    - Otherwise the surviving items (and the ETag) are passed on to step 4.
 
@@ -237,12 +247,21 @@ topics later with minimal downstream impact.
      **Out-of-order arrival** for why that's safe).
 
 7. **Write success record**
-   - Write record to `cpms/success/`: event, canonical record, OneTrust request(s),
-     timestamp, and status (`sent` or `skipped_stale`, plus any items dropped as stale).
+   - Native Step Functions S3 `PutObject` — no Lambda. Writes the run's full state (source
+     event, EventBridge envelope, canonical record, OneTrust request(s), items dropped as
+     stale, watermark result) plus a `result` block with the outcome (`sent` or
+     `skipped_stale`) to `cpms/success/<eventId>/<run>.json`.
+   - **Keyed by `eventId`** so a run's result can be found from the event alone (the
+     preference form's "OneTrust payload" tab does exactly that). The FIFO consumer
+     computes the folder name (`recordId`: the eventId made S3-safe, or `no-event-id`)
+     and passes it into the run; replays of the same event add another `<run>.json` in
+     the same folder rather than overwriting.
+   - Failure after retries → run still ends with its real outcome (a missing record must
+     not re-run an event whose requests are already queued).
 
 **Fail path (shared by every data/logic failure).** Each step's failure first passes
 through a small state that sets `failedStep` (`ValidateSource`, `TransformCanonical`,
-`BuildPayload`, …), then joins one shared path: write `cpms/fail/<run>.json` (the whole
+`BuildPayload`, …), then joins one shared path: write `cpms/fail/<eventId>/<run>.json` (the whole
 run state: source event, errors, `failedStep`), emit the `CPMS/DataFailures` metric, end
 SUCCEEDED with `outcome: "rejected"`. `failedStep` is what delivers the fault attribution
 the step boundaries exist for (see **Why step 1 is separate from step 2**) — you can tell
@@ -602,7 +621,7 @@ S3 "components" are `cpms/<store>/` prefixes inside the existing bucket.
 | Step 4 — build OneTrust receipts (+ validate them) | `cpms-lambda-build-payload` |
 | Step 5 — enqueue | *(native Step Functions SQS integration — no Lambda)* |
 | Step 6 — advance watermark | `cpms-lambda-advance-watermark` |
-| Step 7 — write success record | `cpms-lambda-write-success` |
+| Step 7 — write success record | *(native Step Functions S3 integration — no Lambda)* |
 | Outbound FIFO queue | `cpms-sqs-outbound.fifo` |
 | Outbound DLQ | `cpms-sqs-outbound-dlq.fifo` |
 | Failure alarm | `cpms-alarm-failures` |
@@ -627,8 +646,8 @@ networking and extra storage before the flow is proven.
   | Schema store | `cpms/schemas/<schema_name>/<version>/<schema_name>.schema.json` |
   | Taxonomy file | `cpms/taxonomy/taxonomy.json` |
   | Watermarks | `cpms/watermarks/<sha256(subjectId)>.json` |
-  | Success records | `cpms/success/…` |
-  | Fail records | `cpms/fail/…` |
+  | Success records | `cpms/success/<eventId>/<run>.json` |
+  | Fail records | `cpms/fail/<eventId>/<run>.json` |
 
 - **Schemas are versioned by path.** The validation Lambdas load the schema matching the
   event's `schemaVersion` (e.g. `cpms/schemas/source_event/1.0/…`), so a new contract
@@ -671,6 +690,18 @@ networking and extra storage before the flow is proven.
   differs, step 4's mapping changes.
 - **Which purpose `TransactionType` to send for a preference-only receipt** (topics
   changed, purpose consent itself unchanged) — likely `CHANGE_PREFERENCES`; confirm.
+- **Update form (existing users).** Must read the person's current settings from OneTrust
+  before showing the form, then send only the changes. Needs (a) OneTrust API read
+  access — a read path this flow doesn't have; our own S3 records aren't a substitute,
+  since OneTrust is the source of truth and other systems change it too — and (b)
+  authentication of the person (login / magic link — OneTrust link tokens), so nobody
+  can view or change someone else's preferences by typing their email. Likely its own
+  flow folder.
+- **Topic chosen at registration → also consent to its parent purpose?** Today a
+  registration's topic choices are sent under `TransactionType: CHANGE_PREFERENCES`
+  (records the preference only). If ticking "newsletter by email" at sign-up should also
+  count as consent to `marketing_email`, step 4 should send that purpose as `CONFIRMED`
+  instead — business/legal decision.
 - **Receipts sent without `interactionDate`** — OneTrust's docs don't say how those are
   ordered. Moot for CPMS (the schema makes it required) but relevant if anything else
   posts to the same collection point.

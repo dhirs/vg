@@ -68,6 +68,28 @@
   .modal-foot { padding: 16px 24px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
   .status { font-size: 14px; flex: 1; min-width: 200px; }
   .status.ok { color: var(--ok); } .status.err { color: var(--err); white-space: pre-wrap; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 24px; overflow-x: auto; }
+  .tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 14px; margin-bottom: -1px; font: 600 14px Inter, sans-serif; color: var(--muted); cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; }
+  .tab:hover { color: var(--ink); }
+  .tab.active { color: var(--brand); border-bottom-color: var(--brand); }
+  .panel[hidden] { display: none; }
+  .badge { font: 600 11px Inter, sans-serif; padding: 2px 8px; border-radius: 999px; background: #eef1f6; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+  .badge.processing { background: #fff4d6; color: #8a5a00; }
+  .badge.sent { background: #e3f4ea; color: var(--ok); }
+  .badge.skipped_stale { background: #e6eefb; color: #2b4f8f; }
+  .badge.rejected, .badge.error { background: #fdeceb; color: var(--err); }
+  .panel pre { border-radius: 10px; }
+  .panel-meta { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  .panel-meta code { font: 12px ui-monospace, Menlo, monospace; color: var(--ink); }
+  .empty-state { color: var(--muted); text-align: center; padding: 48px 16px; }
+  .receipt-title { font-weight: 600; margin: 20px 0 8px; }
+  .receipt-title:first-child { margin-top: 0; }
+  .outcome-text { margin: 0 0 16px; }
+  .list { margin: 0 0 16px; padding-left: 20px; }
+  .list li { margin: 4px 0; font-size: 14px; }
+  .list code { font: 12.5px ui-monospace, Menlo, monospace; }
+  .spinner { width: 16px; height: 16px; border: 2px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; vertical-align: -3px; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   @media (max-width: 560px) { .topic { flex-direction: column; align-items: flex-start; } .pills { justify-content: flex-start; } .card { padding: 20px; } }
 </style>
 </head>
@@ -78,6 +100,13 @@
     <p>Choose how we contact you and what you'd like to hear about. You can change this at any time.</p>
   </header>
 
+  <nav class="tabs" role="tablist">
+    <button class="tab active" role="tab" data-tab="form" type="button">Preferences</button>
+    <button class="tab" role="tab" data-tab="sent" type="button">Event sent to CPMS</button>
+    <button class="tab" role="tab" data-tab="onetrust" type="button">OneTrust payload <span class="badge" id="ot-badge" hidden></span></button>
+  </nav>
+
+  <section class="panel" id="panel-form" role="tabpanel">
   <form id="form" novalidate>
     <div class="card">
       <label class="field" for="email">Email address</label>
@@ -97,8 +126,17 @@
       <div id="topics"></div>
     </div>
 
-    <div class="actions"><button class="btn primary" type="submit">Save preferences</button></div>
+    <div class="actions"><span class="err-text" id="submit-err"></span><button class="btn primary" type="submit">Save preferences</button></div>
   </form>
+  </section>
+
+  <section class="panel" id="panel-sent" role="tabpanel" hidden>
+    <div class="card" id="sent-body"><div class="empty-state">Nothing sent yet. Save your preferences and send the event to CPMS.</div></div>
+  </section>
+
+  <section class="panel" id="panel-onetrust" role="tabpanel" hidden>
+    <div class="card" id="ot-body"><div class="empty-state">Nothing sent yet. Once an event is sent, the OneTrust request CPMS generates from it appears here.</div></div>
+  </section>
 </div>
 
 <div class="overlay" id="overlay" role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -200,10 +238,12 @@ $("form").addEventListener("submit", async e => {
   const email = $("email").value.trim();
   if (!$("email").checkValidity() || !email) { $("email-err").textContent = "Enter a valid email address."; $("email").focus(); return; }
   $("email-err").textContent = "";
-  // Every topic x channel is sent explicitly: opted in only if the channel is on AND picked for that topic.
-  const choices = topics.flatMap(t => channels.map(c => ({
-    topic: t.code, channel: c.code, optedIn: enabled.has(c.code) && picks.has(`${t.code}|${c.code}`),
-  })));
+  // New registration: there are no earlier choices to overwrite, so only what the user selected is sent.
+  // Anything left unticked simply wasn't chosen — no implicit opt-outs.
+  const choices = topics.flatMap(t => channels.map(c => ({ topic: t.code, channel: c.code, optedIn: true })))
+    .filter(c => enabled.has(c.channel) && picks.has(`${c.topic}|${c.channel}`));
+  if (!choices.length) { $("submit-err").textContent = "Choose at least one channel and one type of communication."; return; }
+  $("submit-err").textContent = "";
   const res = await fetch("/api/preview", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, choices, locale: navigator.language }) });
   const data = await res.json();
@@ -215,12 +255,84 @@ $("form").addEventListener("submit", async e => {
   openModal();
 });
 
+// --- tabs
+function showTab(name) {
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
+  ["form", "sent", "onetrust"].forEach(n => { $(`panel-${n}`).hidden = n !== name; });
+}
+document.querySelector(".tabs").addEventListener("click", e => { const t = e.target.closest(".tab"); if (t) showTab(t.dataset.tab); });
+
+const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+function setBadge(outcome) {
+  const labels = { processing: "processing", sent: "sent", skipped_stale: "skipped", rejected: "rejected", error: "error" };
+  $("ot-badge").hidden = false; $("ot-badge").className = "badge " + outcome; $("ot-badge").textContent = labels[outcome] || outcome;
+}
+
+function renderSent(event, sendResult) {
+  $("sent-body").innerHTML = `
+    <p class="panel-meta">Sent to <code>${esc(sendResult.bus)}</code> · EventBridge id <code>${esc(sendResult.eventBridgeId)}</code> · eventId <code>${esc(event.eventId)}</code></p>
+    <pre>${highlight(JSON.stringify(event, null, 2))}</pre>`;
+}
+
+function renderResult(r) {
+  const meta = r.record ? `<p class="panel-meta">Run record: <code>${esc(r.record)}</code></p>` : "";
+  if (r.outcome === "sent") {
+    const warn = r.warning ? `<p class="outcome-text status err">Warning: ${esc(r.warning)}</p>` : "";
+    const dropped = r.dropped && r.dropped.length
+      ? `<p class="outcome-text">Dropped as stale (already sent something newer):</p><ul class="list">${r.dropped.map(d => `<li><code>${esc(d.item)}</code> captured ${esc(d.capturedAt)} ≤ ${esc(d.watermark)}</li>`).join("")}</ul>` : "";
+    $("ot-body").innerHTML = `${meta}
+      <p class="outcome-text">CPMS generated <b>${r.requests.length}</b> OneTrust request${r.requests.length === 1 ? "" : "s"} and put ${r.requests.length === 1 ? "it" : "them"} on <code>cpms-sqs-outbound.fifo</code>. This is exactly what the dispatcher will send.</p>
+      ${warn}${dropped}
+      ${r.requests.map((q, i) => `<div class="receipt-title">Request ${i + 1} of ${r.requests.length} · interactionDate ${esc(q.body.interactionDate)}</div><pre>${highlight(JSON.stringify(q, null, 2))}</pre>`).join("")}`;
+  } else if (r.outcome === "skipped_stale") {
+    $("ot-body").innerHTML = `${meta}
+      <p class="outcome-text">Nothing was sent to OneTrust: every decision in this event is <b>not newer</b> than what CPMS already sent for this person.</p>
+      <ul class="list">${r.dropped.map(d => `<li><code>${esc(d.item)}</code> captured ${esc(d.capturedAt)} ≤ already sent ${esc(d.watermark)}</li>`).join("")}</ul>`;
+  } else if (r.outcome === "rejected") {
+    $("ot-body").innerHTML = `${meta}
+      <p class="outcome-text">CPMS rejected this event at step <b>${esc(r.failedStep)}</b> — nothing was sent to OneTrust.</p>
+      <ul class="list">${(r.errors || []).map(e => `<li><code>${esc(e)}</code></li>`).join("")}</ul>`;
+  }
+  setBadge(r.outcome);
+}
+
+let pollToken = 0;
+async function pollResult(eventId) {
+  const token = ++pollToken;  // a newer send cancels the older poll
+  setBadge("processing");
+  $("ot-body").innerHTML = `<p class="outcome-text"><span class="spinner"></span>CPMS is processing the event… this usually takes a few seconds.</p>`;
+  const deadline = Date.now() + 90000;
+  while (token === pollToken && Date.now() < deadline) {
+    try {
+      const res = await fetch(`/api/result?eventId=${encodeURIComponent(eventId)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error((data.errors || ["lookup failed"]).join("; "));
+      if (data.status === "done") { if (token === pollToken) renderResult(data); return; }
+    } catch (err) {
+      if (token !== pollToken) return;
+      setBadge("error"); $("ot-body").innerHTML = `<p class="outcome-text status err">Couldn't read the result: ${esc(err.message)}</p>`; return;
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  if (token === pollToken) {
+    setBadge("error");
+    $("ot-body").innerHTML = `<p class="outcome-text status err">No result after 90 seconds. Check the <code>cpms-lambda-fifo-consumer</code> logs and the ingestion DLQ.</p>`;
+  }
+}
+
 $("send").addEventListener("click", async () => {
   $("send").disabled = true; setStatus("Sending…");
   try {
     const res = await fetch("/api/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: current }) });
     const data = await res.json();
-    if (res.ok) { setStatus(`Sent to ${data.bus} — EventBridge id ${data.eventBridgeId}`, "ok"); return; }
+    if (res.ok) {
+      const event = current;
+      closeModal(); setStatus(""); $("send").disabled = false;
+      renderSent(event, data);
+      showTab("sent");
+      pollResult(event.eventId);
+      return;
+    }
     setStatus(data.errors.join("\n"), "err");
   } catch (err) { setStatus("Could not reach the local server: " + err.message, "err"); }
   $("send").disabled = false;
