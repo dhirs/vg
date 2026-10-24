@@ -1,6 +1,6 @@
 """Create the ingestion half of the flow: event bus -> rule -> ingestion FIFO queue (+ DLQs).
 
-Usage: python3 emo_cl6_update/deploy/setup_ingestion.py
+Usage: python3 send_to_cpms/deploy/setup_ingestion.py
 Idempotent: creates what's missing and re-applies settings on what exists, so it's safe
 to re-run after changing anything below. Names follow design.md -> "Naming convention".
 """

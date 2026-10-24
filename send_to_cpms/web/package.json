@@ -1,5 +1,5 @@
 {
-  "name": "cpms-emo-registration-harness",
+  "name": "cpms-send-to-cpms-test-app",
   "version": "1.0.0",
   "private": true,
   "description": "Local test app: mirrors the event registration page, builds the source_event EMO sends to CPMS, and shows what CPMS generates for OneTrust.",

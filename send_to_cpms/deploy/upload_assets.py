@@ -1,6 +1,6 @@
 """Upload this flow's schemas and taxonomy to the project bucket (AWS_BUCKET_NAME in .env.prod).
 
-Usage: python3 emo_cl6_update/deploy/upload_assets.py
+Usage: python3 send_to_cpms/deploy/upload_assets.py
 Re-run after any change under schemas/ or taxonomy/ — the repo is the source of truth,
 S3 is the deployed copy the Lambdas read.
 """

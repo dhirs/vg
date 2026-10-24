@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start the CPMS test app (EMO / CL6 registration flows + preference centre) and open it.
 #
-# Usage (from anywhere):  ./emo_cl6_update/web/start.sh
+# Usage (from anywhere):  ./send_to_cpms/web/start.sh
 #
 # - installs dependencies on first run
 # - stops anything already listening on port 8600 (e.g. yesterday's server)

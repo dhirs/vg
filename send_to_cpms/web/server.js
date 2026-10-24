@@ -1,4 +1,4 @@
-// Local test app for the emo_cl6_update flow.
+// Local test app for the send_to_cpms flow.
 //
 // Mirrors the real registration pages (event registration via EMO, new adviser account via
 // CL6): on submit it builds the source_event that page's backend sends to CPMS,
@@ -15,7 +15,7 @@
 // connectivity yet) -> shown as editable settings -> only the *changes* are sent to CPMS as a
 // preference_update from CL6.
 //
-// Usage: cd emo_cl6_update/web && npm install && npm start   ->   http://localhost:8600
+// Usage: cd send_to_cpms/web && npm install && npm start   ->   http://localhost:8600
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";

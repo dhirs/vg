@@ -1,6 +1,6 @@
 """Create the processing half: FIFO consumer -> Express state machine (steps 1-6) -> outbound FIFO queue.
 
-Usage: python3 emo_cl6_update/deploy/setup_processing.py
+Usage: python3 send_to_cpms/deploy/setup_processing.py
 Run setup_ingestion.py first (this wires the consumer to cpms-sqs-ingestion.fifo).
 Idempotent: creates what's missing, updates code/config/definition on what exists.
 
