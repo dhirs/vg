@@ -602,9 +602,9 @@ async function openSchematic(id) {
   }
 }
 
-// ---------- CPMS Router: reference pages from send_to_cpms/docs/
+// ---------- CPMS Key Components: reference pages (send_to_cpms/docs/, consent_fanout/design.md)
 async function openRouterDoc(doc) {
-  $("r-title").textContent = "CPMS Router";
+  $("r-title").textContent = "CPMS Key Components";
   $("r-body").innerHTML = `<p class="empty">Loading…</p>`;
   try {
     const { title, markdown, file } = await API(`/api/router-docs/${encodeURIComponent(doc)}`);

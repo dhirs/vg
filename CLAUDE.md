@@ -37,9 +37,10 @@ lives at root.
 
 - *(discovery)* **`consent_fanout/`** — getting OneTrust consent updates into downstream
   systems (SFMC, Dynamics CRM, AEP, Marketo), preferably through OneTrust's own
-  integrations rather than code we build. For now it holds one questions file per target
-  system (e.g. `SFMC.md`); `design.md` / `building_blocks.md` / `schemas/` get added once
-  the route for each system is decided.
+  integrations rather than code we build. Holds one questions file per target system
+  (`SFMC.md`, `AEP.md`, `Marketo.md`) and `design.md` — so far **CPMS_Marketo_Bridge**, the
+  middleware between OneTrust and Marketo, including its components; `building_blocks.md` /
+  `schemas/` get added as routes are decided.
 
 ## What's inside a flow folder
 
@@ -103,7 +104,7 @@ Local Node.js app. Left sidebar: **Non-logged in flows** (new consent record —
 registration** via EMO, **Account registration** via CL6 / Vanguard 365) and **Logged in
 flows** (update consent — **Secure portal** and **Email Unsubscribe**, both of which find the
 person's email and redirect to OneTrust's preference centre via a magic link).
-Below them, **Open questions** shows each `consent_fanout/<doc>.md` (so far `SFMC` and `AEP`) question
+Below them, **Open questions** shows each `consent_fanout/<doc>.md` (so far `SFMC`, `AEP` and `Marketo`) question
 by question, read live from the file, with comments saved to
 `consent_fanout/comments/<doc>.json`. To add a file, add its name to `QUESTION_DOCS` in
 `server.js` and a sidebar link in `public/index.html`.

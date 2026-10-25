@@ -464,7 +464,7 @@ app.get("/api/onetrust/preference-centre", (req, res) => {
 // The markdown file stays the source of truth; comments are kept next to it in
 // consent_fanout/comments/<doc>.json, keyed by question number.
 const QUESTIONS_DIR = join(HERE, "../../consent_fanout");
-const QUESTION_DOCS = ["SFMC", "AEP"];
+const QUESTION_DOCS = ["SFMC", "AEP", "Marketo"];
 const commentsFile = (doc) => join(QUESTIONS_DIR, "comments", `${doc}.json`);
 
 // --- Schematics: every <flow>/diagrams/*.drawio in the repo, found on each request so a new
@@ -512,13 +512,35 @@ app.get("/api/schematics/:id", (req, res) => {
   res.json(found);
 });
 
-// --- CPMS Router: reference pages from send_to_cpms/docs/ (page id -> file).
-const ROUTER_DOCS = { "magic-links": "onetrust_magic_links.md", "cpms-router": "cpms_router.md" };
+// --- CPMS Key Components: reference pages (page id -> file, or a section of one).
+// A page is a whole file, or one "## " section of a file (so a design doc stays the only copy),
+// optionally leaving out "### " subsections whose heading starts with a name in `omit`.
+const ROUTER_DOCS = {
+  "magic-links": { file: "send_to_cpms/docs/onetrust_magic_links.md" },
+  "cpms-router": { file: "send_to_cpms/docs/cpms_router.md" },
+  "marketo-bridge": { file: "consent_fanout/design.md", section: "CPMS_Marketo_Bridge", omit: ["Components"] },
+};
 app.get("/api/router-docs/:doc", (req, res) => {
-  const file = ROUTER_DOCS[req.params.doc];
-  if (!file) return res.status(404).json({ errors: [`No CPMS Router page "${req.params.doc}".`] });
-  const [first, ...rest] = readFileSync(join(FLOW_DIR, "docs", file), "utf8").split("\n");
-  res.json({ title: first.replace(/^#\s+/, ""), markdown: rest.join("\n").trim(), file: `send_to_cpms/docs/${file}` });
+  const page = ROUTER_DOCS[req.params.doc];
+  if (!page) return res.status(404).json({ errors: [`No CPMS Router page "${req.params.doc}".`] });
+  const lines = readFileSync(join(REPO_ROOT, page.file), "utf8").split("\n");
+  let title, body;
+  if (page.section) {
+    const start = lines.findIndex((l) => l.startsWith(`## ${page.section}`));
+    if (start < 0) return res.status(404).json({ errors: [`No "${page.section}" section in ${page.file}.`] });
+    const end = lines.findIndex((l, i) => i > start && l.startsWith("## "));
+    title = lines[start].replace(/^##\s+/, "");
+    body = lines.slice(start + 1, end < 0 ? undefined : end);
+    let skipping = false;
+    body = body.filter((l) => {
+      if (l.startsWith("### ")) skipping = (page.omit || []).some((name) => l.slice(4).startsWith(name));
+      return !skipping;
+    }).map((l) => l.replace(/^###(?= )/, "##"));
+  } else {
+    title = lines[0].replace(/^#\s+/, "");
+    body = lines.slice(1);
+  }
+  res.json({ title, markdown: body.join("\n").trim(), file: page.section ? `${page.file} → ${page.section}` : page.file });
 });
 
 // --- OneTrust Connectors: consent_fanout/connectors/<doc>.md shown as a reference page.
