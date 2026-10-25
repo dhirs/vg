@@ -41,8 +41,8 @@ async function loadConfig() {
 }
 
 // ---------- routing: #/event, #/account, #/unsubscribe[?ref=…], #/preferences[?localId=…], #/onetrust?token=…,
-// #/questions/<doc>, #/connectors/<doc>, #/schematics/<id>
-const PAGES = [...FLOWS, "unsubscribe", "preferences", "onetrust", "questions", "connectors", "schematics"];
+// #/router/<doc>, #/questions/<doc>, #/connectors/<doc>, #/schematics/<id>
+const PAGES = [...FLOWS, "unsubscribe", "preferences", "onetrust", "router", "questions", "connectors", "schematics"];
 function route() {
   const [path, query = ""] = location.hash.replace(/^#\//, "").split("?");
   const [page, doc] = path.split("/");
@@ -56,6 +56,7 @@ function route() {
   document.querySelector(".side-link.active")?.closest("details.side-group")?.setAttribute("open", "");
   if (flow === "questions") return openQuestions(doc);
   if (flow === "connectors") return openConnector(doc);
+  if (flow === "router") return openRouterDoc(doc);
   if (flow === "schematics") return openSchematic(doc);
   const params = new URLSearchParams(query);
   if (flow === "preferences") return preferenceCentre({ mode: "portal", localId: params.get("localId") });
@@ -491,7 +492,7 @@ async function oneTrustStandIn(token) {
 
 // ---------- open questions: consent_fanout/<doc>.md, question by question, with comments
 // Renders the markdown subset those files use: ## headings, paragraphs, nested -/1. lists,
-// ``` blocks, **bold**, *italic*, `code` and [links](url).
+// | tables |, ``` blocks, **bold**, *italic*, `code` and [links](url).
 const inline = (s) => esc(s)
   .replace(/`([^`]+)`/g, "<code>$1</code>")
   .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
@@ -500,12 +501,22 @@ const inline = (s) => esc(s)
 const indentOf = (l) => l.match(/^ */)[0].length;
 const LIST_ITEM = /^( *)([-*]|\d+\.) +(.*)$/;
 const HEADING = /^(#{2,4}) +(.*)$/;
+const TABLE_ROW = /^\s*\|.*\|\s*$/;
+const cellsOf = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
 function md(src) {
   const lines = src.split("\n");
   const out = [];
   for (let i = 0; i < lines.length;) {
     const line = lines[i];
     if (!line.trim()) { i++; continue; }
+    if (TABLE_ROW.test(line) && TABLE_ROW.test(lines[i + 1] || "") && /^[\s|:-]+$/.test(lines[i + 1])) {
+      const head = cellsOf(line);
+      const rows = [];
+      for (i += 2; i < lines.length && TABLE_ROW.test(lines[i]); i++) rows.push(cellsOf(lines[i]));
+      out.push(`<div class="md-table"><table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead>` +
+        `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+      continue;
+    }
     const heading = line.match(HEADING);
     if (heading) {
       const level = heading[1].length + 1; // ## -> h3 (the page title is the h1)
@@ -543,7 +554,7 @@ function md(src) {
     }
     const para = [];
     const why = (l) => l.trim().startsWith("*Why:*"); // the "Why" behind each question gets its own paragraph
-    for (; i < lines.length && lines[i].trim() && !lines[i].trim().startsWith("```") && !LIST_ITEM.test(lines[i]) && !HEADING.test(lines[i]) && !(para.length && why(lines[i])); i++) para.push(lines[i].trim());
+    for (; i < lines.length && lines[i].trim() && !lines[i].trim().startsWith("```") && !LIST_ITEM.test(lines[i]) && !HEADING.test(lines[i]) && !TABLE_ROW.test(lines[i]) && !(para.length && why(lines[i])); i++) para.push(lines[i].trim());
     out.push(`<p${why(para[0]) ? ' class="why"' : ""}>${inline(para.join(" "))}</p>`);
   }
   return out.join("");
@@ -588,6 +599,19 @@ async function openSchematic(id) {
     window.GraphViewer.createViewerForElement(canvas);
   } catch (err) {
     $("s-body").innerHTML = `<div class="callout err">${esc(err.message)}</div>`;
+  }
+}
+
+// ---------- CPMS Router: reference pages from send_to_cpms/docs/
+async function openRouterDoc(doc) {
+  $("r-title").textContent = "CPMS Router";
+  $("r-body").innerHTML = `<p class="empty">Loading…</p>`;
+  try {
+    const { title, markdown, file } = await API(`/api/router-docs/${encodeURIComponent(doc)}`);
+    $("r-title").textContent = title;
+    $("r-body").innerHTML = md(markdown) + `<p class="q-source">Source: <code>${esc(file)}</code></p>`;
+  } catch (err) {
+    $("r-body").innerHTML = `<div class="callout err">${esc(err.message)}</div>`;
   }
 }
 

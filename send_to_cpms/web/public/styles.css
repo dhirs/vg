@@ -347,3 +347,10 @@ input:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px v
 .otpc-facts dd { margin: 0; overflow-wrap: anywhere; }
 .otpc-facts code { font: 12.5px "JetBrains Mono", ui-monospace, monospace; }
 @media (max-width: 560px) { .calls li, .otpc-facts { grid-template-columns: 1fr; } }
+
+/* Markdown tables (reference pages) */
+.md-table { overflow-x: auto; margin: 4px 0 14px; border: 1px solid var(--line); border-radius: 10px; }
+.md-table table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+.md-table th, .md-table td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.md-table th { background: var(--surface-2); color: var(--ink); font-weight: 600; }
+.md-table tr:last-child td { border-bottom: 0; }

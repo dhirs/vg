@@ -47,6 +47,17 @@
         </a>
       </details>
       <details class="side-group">
+        <summary class="side-label">CPMS Router</summary>
+        <a href="#/router/magic-links" class="side-link" data-flow="router" data-doc="magic-links">
+          <svg viewBox="0 0 24 24"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>
+          <span>OneTrust magic links<small>How they work · why seeding fails</small></span>
+        </a>
+        <a href="#/router/cpms-router" class="side-link" data-flow="router" data-doc="cpms-router">
+          <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h5M12 12l5-5M12 12l5 5"/></svg>
+          <span>What is CPMS Router<small>One link per system · nothing to seed</small></span>
+        </a>
+      </details>
+      <details class="side-group">
         <summary class="side-label">Open questions</summary>
         <a href="#/questions/SFMC" class="side-link" data-flow="questions" data-doc="SFMC">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 0 1 4.9.7c0 1.7-2.4 2.3-2.4 3.8M12 17h0"/></svg>
@@ -132,6 +143,14 @@
       </div>
     </section>
 
+    <!-- CPMS Router header -->
+    <section class="hero" data-flow="router" hidden>
+      <div class="hero-inner">
+        <span class="eyebrow">CPMS Router</span>
+        <h1 id="r-title">Loading…</h1>
+      </div>
+    </section>
+
     <!-- OneTrust Connectors header -->
     <section class="hero" data-flow="connectors" hidden>
       <div class="hero-inner">
@@ -155,6 +174,9 @@
 
       <!-- ===== Schematics (<flow>/diagrams/*.drawio) ===== -->
       <div data-flow="schematics" hidden><div class="card schematic" id="s-body"></div></div>
+
+      <!-- ===== CPMS Router (send_to_cpms/docs/*.md) ===== -->
+      <div data-flow="router" hidden><div class="card md doc" id="r-body"></div></div>
 
       <!-- ===== OneTrust Connectors (consent_fanout/connectors/<doc>.md) ===== -->
       <div data-flow="connectors" hidden><div class="card md doc" id="c-body"></div></div>

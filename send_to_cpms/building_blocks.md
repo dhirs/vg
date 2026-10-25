@@ -73,14 +73,24 @@ Inventory of infrastructure components. For *why* decisions were made this way, 
 | Receipt signing key | KMS asymmetric signing key `cpms-kms-onetrust-signing` | CPMS's private key for the optional `authorization: Bearer <JWT>` header (`sub` = the receipt's email). Non-exportable; the dispatcher asks KMS to sign. Its public key is registered in OneTrust so a leaked collection point token alone can't post receipts. |
 | Dispatcher | Lambda `cpms-lambda-dispatcher` | Reads `cpms-sqs-outbound.fifo`; for each message fetches the tagged collection point's token, replaces the `{{COLLECTION_POINT_JWT}}` placeholder, signs the authorization JWT via KMS, and POSTs to OneTrust. The only component that holds OneTrust credentials. |
 
-## Updating consent: email link (not built yet)
+## CPMS_Router — updating consent (not built yet)
+
+A lightweight component that exposes **two links** — one embedded in Marketo emails, one shown on
+Vanguard 365 web pages — each backed by **its own Lambda**. Both take an incoming encrypted ID,
+decrypt it, look the person's email up, get their OneTrust magic link and **redirect** (302) to
+OneTrust's preference centre. Separate Lambdas because the two links have different trust models,
+secrets and lookup systems; the parts they share live in one shared module.
 
 | Block | Type | What it does |
 |---|---|---|
-| `cpmsPrefRef` lead field | Marketo custom field | Holds the lead's **pre-encrypted lead ID** (`v1.<iv>.<ciphertext+tag>`, AES-256-GCM). Printed into the email's preferences link as `?ref={{lead.cpmsPrefRef}}`. Name to confirm. |
-| `ref` issuer | Lambda `cpms-lambda-pref-ref-issue` (Marketo webhook) | Called by a Marketo smart campaign when a lead is created (plus a one-off batch for existing leads). Encrypts the lead ID and returns it; the webhook's response mapping writes it into `cpmsPrefRef`. Only accepts Marketo: shared-secret header + Marketo IP ranges. |
-| Email-link handler | Lambda `cpms-lambda-pref-redirect`, behind the Marketo endpoint `GET /marketo/preferences` | The endpoint itself marks the `ref` as a Marketo pre-encrypted lead ID (no source parameter). On each click: validates and decrypts `ref` → lead ID; Marketo *Get Lead by Id* → email (and checks the stored `cpmsPrefRef` matches, for revocation); OneTrust *Get Data Subject Token* → magic link; redirects. Generic error page for every rejection. |
-| `ref` key | Secrets Manager `cpms-secret-pref-ref-key` | 256-bit AES key(s) by version — current plus any still accepted during a rotation. Readable only by the two Lambdas above. |
+| CPMS_Router | API Gateway HTTP API `cpms-apigw-router` | Exposes the two routes below; nothing else. The route a link points at tells the router where the ID came from — there's no "source" parameter. Per-route throttling, so a campaign send can't starve website users. |
+| Marketo route | `GET /marketo/preferences?ref=…` → Lambda `cpms-lambda-router-marketo` | The link printed in Marketo emails (`?ref={{lead.cpmsPrefRef}}`). Validates and decrypts `ref` → lead ID; Marketo *Get Lead by Id* → email, checking the lead's stored `cpmsPrefRef` matches (revocation); OneTrust *Get Data Subject Token* → magic link; redirects. Reads `cpms-secret-pref-ref-key` and the Marketo API credentials only. |
+| Website route | `GET /website/preferences?ref=…` → Lambda `cpms-lambda-router-website` | The link shown on Vanguard 365 pages. The page encrypts the signed-in user's local ID **plus the issue time** when it renders, so the `ref` is short-lived (e.g. 10 minutes). Validates, decrypts and checks the age of `ref` → local ID; CRM → email; OneTrust → magic link; redirects. Reads `cpms-secret-web-ref-key` and the CRM API credentials only. |
+| Shared router module | `lambdas/shared/router.py` (like `lambdas/shared/watermark.py`) | What both Lambdas do the same way: AES-256-GCM decrypt with key versions, OneTrust *Get Data Subject Token* + magic-link URL, the generic "this link is invalid or has expired" page (same for every rejection), failure counting, and the rule never to log ID, `ref` and email together. |
+| `cpmsPrefRef` lead field | Marketo custom field | Holds the lead's **pre-encrypted lead ID** (`v1.<iv>.<ciphertext+tag>`, AES-256-GCM, additional data `cpms-pref-ref:v1`). Name to confirm. |
+| Marketo `ref` issuer | Lambda `cpms-lambda-pref-ref-issue` (Marketo webhook) | Called by a Marketo smart campaign when a lead is created (plus a one-off batch for existing leads). Encrypts the lead ID; the webhook's response mapping writes it into `cpmsPrefRef`. Only accepts Marketo: shared-secret header + Marketo IP ranges. |
+| Marketo `ref` key | Secrets Manager `cpms-secret-pref-ref-key` | 256-bit AES key(s) by version — current plus any still accepted during a rotation. Readable only by the issuer and `cpms-lambda-router-marketo`. |
+| Website `ref` key | Secrets Manager `cpms-secret-web-ref-key` | Separate 256-bit AES key(s) by version, additional data `cpms-web-ref:v1` — so a website `ref` can't be used on the Marketo route or the other way round. Readable by `cpms-lambda-router-website` and the Vanguard 365 page backend that encrypts the link (how the website gets access — e.g. cross-account Secrets Manager — to confirm). |
 | Marketo webhook secret | Secrets Manager `cpms-secret-marketo-webhook` | Shared secret Marketo sends in a custom header, so only Marketo can ask for a `ref` to be issued. |
 
 ## Observability
@@ -91,6 +101,6 @@ Inventory of infrastructure components. For *why* decisions were made this way, 
 
 ## Not yet built / designed
 
-- **Magic-link handover** (updating consent) — identify the person, then redirect to OneTrust's preference centre: secure portal = Vanguard 365 sign-in + CRM lookup (local ID → email); email link = Marketo lookup (lead ID → email); both then OneTrust *Get Data Subject Token* (email → link token → magic link). Stubbed in `web/` today (stub CRM, stub Marketo, in-memory link tokens, a local stand-in preference centre). See `design.md` → "Updating consent".
+- **CPMS_Router** (updating consent) — see **CPMS_Router** above. Stubbed in `web/` today (stub CRM, stub Marketo with `cpmsPrefRef`, a local stand-in for the `ref` key, in-memory link tokens, a local stand-in preference centre).
 - **Dispatcher** — will eventually read the outbound request queue and make the real OneTrust API call once paid access exists. Not designed.
 - **VPC + VPC endpoints** — **prod only** (dev has no Redis, so no VPC). Required for any Lambda touching Redis (step 1, step 4, taxonomy cache updater); endpoints needed for those same Lambdas to reach S3/SQS without going through NAT. Not provisioned yet.

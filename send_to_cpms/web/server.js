@@ -476,6 +476,7 @@ const SCHEMATIC_ORDER = [
   { file: "send_to_cpms/diagrams/New_Consent_Record.drawio", label: "New_Consent_Record" },
   { file: "send_to_cpms/diagrams/Email_Consent_Update.drawio", label: "Email_Consent_Update" },
   { file: "send_to_cpms/diagrams/Website_Consent_Update.drawio", label: "Website_Consent_Update" },
+  { file: "send_to_cpms/diagrams/CPMS_Router.drawio", label: "CPMS_Router" },
   { file: "consent_fanout/diagrams/OT_to_SFMC.drawio", label: "OT to SFMC" },
 ];
 const decodeEntities = (s) => s.replace(/&amp;/g, "&").replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
@@ -509,6 +510,15 @@ app.get("/api/schematics/:id", (req, res) => {
   const found = schematics().find((s) => s.id === req.params.id);
   if (!found) return res.status(404).json({ errors: [`No diagram "${req.params.id}".`] });
   res.json(found);
+});
+
+// --- CPMS Router: reference pages from send_to_cpms/docs/ (page id -> file).
+const ROUTER_DOCS = { "magic-links": "onetrust_magic_links.md", "cpms-router": "cpms_router.md" };
+app.get("/api/router-docs/:doc", (req, res) => {
+  const file = ROUTER_DOCS[req.params.doc];
+  if (!file) return res.status(404).json({ errors: [`No CPMS Router page "${req.params.doc}".`] });
+  const [first, ...rest] = readFileSync(join(FLOW_DIR, "docs", file), "utf8").split("\n");
+  res.json({ title: first.replace(/^#\s+/, ""), markdown: rest.join("\n").trim(), file: `send_to_cpms/docs/${file}` });
 });
 
 // --- OneTrust Connectors: consent_fanout/connectors/<doc>.md shown as a reference page.
