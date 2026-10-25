@@ -1,76 +1,66 @@
-# Marketo — integration questions
+# Marketo — review of the US office's OneTrust → Marketo integration
 
-How consent and preferences get from OneTrust into Marketo, and the open questions — with why
-each answer matters — that must be settled before building it.
+The US office has built OneTrust → Marketo integrations and offers them to us under a
+chargeback. These questions assess what has already been built: whether it's soundly designed,
+and how long it would take to close any gaps. If that takes long, the case for the chargeback
+falls away: a cheaper consent platform with integrations built and run locally may be the better
+deal.
 
-## Approach (proposed)
+## The benchmark
 
-Two candidate routes; the second is recommended.
-
-**A. OneTrust workflow → Marketo REST API directly** — the same shape as SFMC: a OneTrust
-integration workflow, triggered by *Data Subject Consent Updated*, calls Marketo's
-*Sync Leads* API (`POST /rest/v1/leads.json`) to update the lead.
-
-**B. OneTrust workflow → a small CPMS fanout service → Marketo (recommended).** OneTrust posts
-each consent change to a secured CPMS endpoint; CPMS queues it (opt-outs first), batches updates,
-and updates **every** Marketo lead with that email within Marketo's API limits and daily quota.
-Full design: `consent_fanout/design.md` → **CPMS_Marketo_Bridge**.
-
-**Why B over A:** Marketo community experts report that OneTrust's built-in calls to Marketo
-handle token expiry badly (jobs fail and retry 15–30 minutes later) and don't respect Marketo's
-concurrency limits (one call per record can swamp the limit), and their advice is to put a
-service between the two. Marketo also allows several leads with the same email, which OneTrust
-doesn't — so one OneTrust update may need to reach several leads. CPMS already runs this pattern
-(FIFO queues, Lambdas, DLQs, alarms), so B adds little new.
+A sound OneTrust → Marketo integration has to handle: Marketo token expiry, Marketo's shared rate
+limits and daily quota, several leads per email, out-of-order changes, and failures that must not
+be silent. Each question below checks
+one of these, with what a good answer and a red flag look like.
 
 ## What we know so far
 
-- **OneTrust built a Marketo integration**, listed on Marketo LaunchPoint. OneTrust's guide
-  describes a OneTrust collection point used with **Marketo smart campaigns and a Marketo
-  webhook** — mainly Marketo *sending* consent to OneTrust — with people matched by **email**.
-  Pushing OneTrust → Marketo is done with OneTrust integration workflows calling Marketo's API.
-- **Duplicates:** OneTrust allows one data subject per email; Marketo allows several leads with
-  the same email. An update must reach all of them.
-- **Marketo API limits:** 100 calls per 20 seconds and 10 concurrent calls per instance —
-  **fixed, can't be raised**; a daily quota of typically 50,000 calls (can be raised by
-  purchase); Sync Leads takes up to 300 leads per call; error 606 = rate limit exceeded.
-- **Marketo API access** uses a LaunchPoint *Custom* service tied to an API-only user, giving a
-  client ID and secret; access tokens are short-lived (to confirm: about an hour).
-- **Marketo fields:** the standard `unsubscribed` flag blocks all marketing email to that lead;
-  anything finer (per purpose / topic / channel) needs custom fields. The CPMS Router's
-  `cpmsPrefRef` field also lives on the lead.
+- OneTrust's own Marketo integration mainly sends consent **Marketo → OneTrust** (a OneTrust
+  collection point with Marketo smart campaigns and webhooks, matched by email). OneTrust →
+  Marketo is done with OneTrust integration workflows calling Marketo's REST API.
+- Marketo practitioners report (2024–25) that OneTrust's direct calls to Marketo handle token
+  expiry badly (retrying 15–30 minutes later) and ignore Marketo's concurrency limits.
+- Marketo limits: 100 calls per 20 seconds and 10 concurrent — fixed, shared by everything using
+  the instance; a daily quota of typically 50,000 calls; up to 300 leads per update call.
+- Marketo can hold several leads with the same email; OneTrust holds one record per email.
 
 ## Questions
 
-### Identity
+### Design: does it work under real conditions?
 
-1. **How many Marketo leads share an email?** Is Marketo synced to Dynamics, are there lead
-   partitions, and how long is the *Possible Duplicates* list? Marketo doesn't merge automatically — duplicates come from CRM sync (each CRM record is its
-   own person), partitions (dedupe is per partition), API calls (`createDuplicate`, closely
-   timed upserts) or a custom dedupe field.
-   *Why:* OneTrust has one record per email. If only one lead is updated, the others keep the old
-   consent and can still be emailed — so the fanout service updates every lead with that email.
+1. **How does the integration handle Marketo access tokens expiring?**
+   *Why:* an opt-out that fails on an expired token and waits 15–30 minutes to retry can miss a
+   campaign send.
+   *Good:* the token is reused and renewed before it expires; a failed call is retried at once
+   with a new token. *Red flag:* "OneTrust handles it" or retries on OneTrust's schedule.
 
-### OneTrust side
+2. **How does it stay within Marketo's rate limits, and what happens on a large change** (e.g.
+   5,000 people at once)?
+   *Why:* the limits are shared with the CRM sync and other tools; one call per record can lock
+   them out.
+   *Good:* calls are batched and throttled below the limit. *Red flag:* one call per change, no
+   throttling, or "it's never been an issue".
 
-2. **How does the CPMS endpoint know a call really comes from OneTrust?** Which credential can
-   OneTrust's workflow send — an API key header, basic auth — and can we get OneTrust's outbound
-   IP ranges?
-   *Why:* the endpoint changes consent in Marketo. Without a check, **anyone who finds the URL can
-   change anyone's consent**.
-   *Example:* Jane opts out. Someone posts `{ "email": "jane@…", "unsubscribed": false }` to the
-   endpoint; CPMS queues it, the fanout Lambda writes it, and Marketo emails Jane again — a
-   compliance breach with no trace of who did it. Or a script posts thousands of emails with
-   `unsubscribed: true` and wipes out the marketing list. (Solution: `design.md` → Endpoint
-   security.)
+3. **How many Marketo API calls does one consent change cost, and what stops a big re-push from
+   using up the daily quota?**
+   *Why:* once the quota is gone, every update stops until the next day — opt-outs included.
+   *Good:* batched updates, opt-outs prioritised, quota monitored, bulk import for re-syncs.
+   *Red flag:* no figure, or no plan for bulk changes.
 
-### Marketo API access
+4. **When an email matches several Marketo leads, which are updated?**
+   *Why:* leads left untouched keep the old consent and can still be emailed.
+   *Good:* every lead with that email. *Red flag:* "Marketo dedupes on email" or only the first
+   match.
 
-3. **How long do Marketo access tokens last in our instance, and what is our daily API quota?**
-    *Why:* the fanout service must reuse a token until just before it expires (fetching one per
-    call wastes quota) and stay under the daily quota — a big change, like a taxonomy update
-    touching everyone, could otherwise use it up and stop all updates until the next day.
-   (Design: `design.md` → Updating Marketo, API quota.)
+5. **What stops an older change overwriting a newer one?**
+   *Why:* a retried or delayed opt-in landing after an opt-out re-subscribes the person.
+   *Good:* per-person ordering and a timestamp check before writing. *Red flag:* none, or
+   "OneTrust sends them in order".
+
+6. **What happens when an update fails — who finds out, and how is it replayed?**
+   *Why:* a silently lost opt-out is a compliance breach nobody notices until a complaint.
+   *Good:* failures are kept (dead-letter queue or equivalent), alarmed and replayable, with a
+   named owner. *Red flag:* failures only visible in OneTrust's workflow log.
 
 ## Sources
 
@@ -79,4 +69,4 @@ doesn't — so one OneTrust update may need to reach several leads. CPMS already
 - [OneTrust: Consent Integration Events](https://docs.onetrust.com/en/integrations/integrating-for-consent--preference-management/consent-integration-events)
 - [Adobe community: Marketo OneTrust integration (2024–25)](https://experienceleaguecommunities.adobe.com/marketo-27/marketo-onetrust-integration-184111)
 - [Adobe: Marketo REST API (limits)](https://experienceleague.adobe.com/en/docs/marketo-developer/marketo/rest/rest-api)
-- [Adobe: Marketo Lead Database — Leads (Sync Leads, Push Lead)](https://experienceleague.adobe.com/en/docs/marketo-developer/marketo/rest/lead-database/leads)
+- [Adobe: Marketo Lead Database — Leads](https://experienceleague.adobe.com/en/docs/marketo-developer/marketo/rest/lead-database/leads)
