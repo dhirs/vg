@@ -10,33 +10,60 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<header class="topbar">
+  <a class="topbar-logo" href="#/event" aria-label="Vanguard — home">
+    <!-- the official logo goes in public/vanguard-logo.svg; until then the wordmark below stands in -->
+    <img src="vanguard-logo.svg" alt="Vanguard" class="logo-img" onerror="this.hidden = true; this.nextElementSibling.hidden = false">
+    <span class="logo-word" hidden>Vanguard</span>
+  </a>
+  <div class="topbar-title">
+    <span>Consent &amp; Preference Management Service</span>
+    <small>CPMS · test harness</small>
+  </div>
+</header>
 <div class="layout">
   <aside class="sidebar">
-    <div class="brand"><span class="brand-mark">C</span><span>CPMS<span class="brand-sub">source flows</span></span></div>
     <nav class="side-nav" aria-label="Flows">
-      <span class="side-label">Non-logged in flows<small>New Consent Record</small></span>
-      <a href="#/event" class="side-link" data-flow="event">
-        <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
-        <span>Event registration<small>EMO · webinar sign-up</small></span>
-      </a>
-      <a href="#/account" class="side-link" data-flow="account">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>
-        <span>Account registration<small>CL6 · Vanguard 365 adviser account</small></span>
-      </a>
-      <span class="side-label side-label-gap">Logged in flows<small>Update Consent</small></span>
-      <a href="#/preferences" class="side-link" data-flow="preferences">
-        <svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
-        <span>Secure portal<small>Signed-in user · current settings</small></span>
-      </a>
-      <a href="#/unsubscribe" class="side-link" data-flow="unsubscribe">
-        <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
-        <span>Email Unsubscribe<small>Marketing email · unsubscribe link</small></span>
-      </a>
-      <span class="side-label side-label-gap">Open questions</span>
-      <a href="#/questions/SFMC" class="side-link" data-flow="questions" data-doc="SFMC">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 0 1 4.9.7c0 1.7-2.4 2.3-2.4 3.8M12 17h0"/></svg>
-        <span>SFMC<small>OneTrust → SFMC · consent_fanout/SFMC.md</small></span>
-      </a>
+      <details class="side-group" open>
+        <summary class="side-label">Non-logged in flows<small>New Consent Record</small></summary>
+        <a href="#/event" class="side-link" data-flow="event">
+          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+          <span>Event registration<small>EMO · webinar sign-up</small></span>
+        </a>
+        <a href="#/account" class="side-link" data-flow="account">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>
+          <span>Account registration<small>CL6 · Vanguard 365 adviser account</small></span>
+        </a>
+      </details>
+      <details class="side-group">
+        <summary class="side-label">Logged in flows<small>Update Consent</small></summary>
+        <a href="#/preferences" class="side-link" data-flow="preferences">
+          <svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+          <span>Secure portal<small>Signed-in user · current settings</small></span>
+        </a>
+        <a href="#/unsubscribe" class="side-link" data-flow="unsubscribe">
+          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+          <span>Email Unsubscribe<small>Marketing email · unsubscribe link</small></span>
+        </a>
+      </details>
+      <details class="side-group">
+        <summary class="side-label">Open questions</summary>
+        <a href="#/questions/SFMC" class="side-link" data-flow="questions" data-doc="SFMC">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 0 1 4.9.7c0 1.7-2.4 2.3-2.4 3.8M12 17h0"/></svg>
+          <span>SFMC<small>OneTrust → SFMC · consent_fanout/SFMC.md</small></span>
+        </a>
+        <a href="#/questions/AEP" class="side-link" data-flow="questions" data-doc="AEP">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 0 1 4.9.7c0 1.7-2.4 2.3-2.4 3.8M12 17h0"/></svg>
+          <span>AEP<small>OneTrust → AEP · consent_fanout/AEP.md</small></span>
+        </a>
+      </details>
+      <details class="side-group">
+        <summary class="side-label">OneTrust Connectors</summary>
+        <a href="#/connectors/AEP" class="side-link" data-flow="connectors" data-doc="AEP">
+          <svg viewBox="0 0 24 24"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0V7zM12 16v5"/></svg>
+          <span>AEP Connector<small>OneTrust → AEP · access token</small></span>
+        </a>
+      </details>
     </nav>
     <div class="side-foot"><span class="env-pill">Test harness · dev</span></div>
   </aside>
@@ -83,6 +110,14 @@
       </div>
     </section>
 
+    <!-- OneTrust Connectors header -->
+    <section class="hero" data-flow="connectors" hidden>
+      <div class="hero-inner">
+        <span class="eyebrow">OneTrust Connectors</span>
+        <h1 id="c-title">Loading…</h1>
+      </div>
+    </section>
+
     <!-- Open questions header -->
     <section class="hero" data-flow="questions" hidden>
       <div class="hero-inner">
@@ -95,6 +130,9 @@
     <main class="wrap">
       <!-- ===== Open questions (consent_fanout/<doc>.md) ===== -->
       <div data-flow="questions" hidden id="q-body"></div>
+
+      <!-- ===== OneTrust Connectors (consent_fanout/connectors/<doc>.md) ===== -->
+      <div data-flow="connectors" hidden><div class="card md doc" id="c-body"></div></div>
 
       <!-- ===== Preference centre: secure portal (signed-in user) and email unsubscribe link ===== -->
       <div data-flow="preferences unsubscribe" hidden>

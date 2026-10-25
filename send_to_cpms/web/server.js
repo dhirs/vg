@@ -468,13 +468,21 @@ app.get("/api/onetrust/preferences", async (req, res) => {
 // The markdown file stays the source of truth; comments are kept next to it in
 // consent_fanout/comments/<doc>.json, keyed by question number.
 const QUESTIONS_DIR = join(HERE, "../../consent_fanout");
-const QUESTION_DOCS = ["SFMC"];
+const QUESTION_DOCS = ["SFMC", "AEP"];
 const commentsFile = (doc) => join(QUESTIONS_DIR, "comments", `${doc}.json`);
+
+// --- OneTrust Connectors: consent_fanout/connectors/<doc>.md shown as a reference page.
+const CONNECTOR_DOCS = ["AEP"];
+app.get("/api/connectors/:doc", (req, res) => {
+  if (!CONNECTOR_DOCS.includes(req.params.doc)) return res.status(404).json({ errors: [`No connector page "${req.params.doc}".`] });
+  const [first, ...rest] = readFileSync(join(QUESTIONS_DIR, "connectors", `${req.params.doc}.md`), "utf8").split("\n");
+  res.json({ title: first.replace(/^#\s+/, ""), markdown: rest.join("\n").trim() });
+});
 
 function parseQuestions(doc) {
   const lines = readFileSync(join(QUESTIONS_DIR, `${doc}.md`), "utf8").split("\n");
   const out = { title: "", intro: [], sections: [], questions: [] };
-  let section = null, group = null, question = null, indent = 0;
+  let section = null, group = null, question = null;
   for (const line of lines) {
     if (line.startsWith("# ")) { out.title = line.slice(2).trim(); continue; }
     if (line.startsWith("## ")) {
@@ -488,13 +496,19 @@ function parseQuestions(doc) {
     if (line.startsWith("### ")) { question = null; group = line.slice(4).trim(); continue; }
     const m = line.match(/^(\d+)\.\s+(.*)$/);
     if (m) {
-      indent = m[1].length + 2;
       question = { n: Number(m[1]), group, lines: [m[2]] };
       out.questions.push(question);
     } else if (question) {
-      question.lines.push(line.startsWith(" ".repeat(indent)) ? line.slice(indent) : line.trimStart());
+      question.lines.push(line);
     }
   }
+  // A question's body is indented under its number; strip the body's own common indent
+  // (not the number's width — "9." can sit on text indented for "13." after renumbering).
+  const dedent = ([first, ...rest]) => {
+    const base = Math.min(...rest.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
+    return [first, ...rest.map((l) => l.slice(Number.isFinite(base) ? base : 0))];
+  };
+  out.questions.forEach((q) => { q.lines = dedent(q.lines); });
   const text = (ls) => ls.join("\n").trim();
   return {
     title: out.title,

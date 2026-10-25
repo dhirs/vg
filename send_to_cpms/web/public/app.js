@@ -41,8 +41,8 @@ async function loadConfig() {
        <span><b>${esc(c.label)}</b><small>${esc(c.description)}</small></span></label>`).join("");
 }
 
-// ---------- routing: #/event, #/account, #/unsubscribe[?token=…], #/preferences[?localId=…], #/questions/<doc>
-const PAGES = [...FLOWS, "unsubscribe", "preferences", "questions"];
+// ---------- routing: #/event, #/account, #/unsubscribe[?token=…], #/preferences[?localId=…], #/questions/<doc>, #/connectors/<doc>
+const PAGES = [...FLOWS, "unsubscribe", "preferences", "questions", "connectors"];
 function route() {
   const [path, query = ""] = location.hash.replace(/^#\//, "").split("?");
   const [page, doc] = path.split("/");
@@ -52,7 +52,10 @@ function route() {
     if (el.classList.contains("side-link")) el.classList.toggle("active", flows.includes(flow) && (!el.dataset.doc || el.dataset.doc === doc));
     else el.hidden = !flows.includes(flow);
   });
+  // a collapsed sidebar section opens when you're on one of its pages, so the active link shows
+  document.querySelector(".side-link.active")?.closest("details.side-group")?.setAttribute("open", "");
   if (flow === "questions") return openQuestions(doc);
+  if (flow === "connectors") return openConnector(doc);
   const params = new URLSearchParams(query);
   if (flow === "preferences") return preferenceCentre({ mode: "portal", localId: params.get("localId") });
   if (flow === "unsubscribe") return preferenceCentre({ mode: "unsubscribe", token: params.get("token") });
@@ -662,8 +665,8 @@ async function onUpdateSent(event) {
 }
 
 // ---------- open questions: consent_fanout/<doc>.md, question by question, with comments
-// Renders the markdown subset those files use: paragraphs, nested -/1. lists, ``` blocks,
-// **bold**, *italic*, `code` and [links](url).
+// Renders the markdown subset those files use: ## headings, paragraphs, nested -/1. lists,
+// ``` blocks, **bold**, *italic*, `code` and [links](url).
 const inline = (s) => esc(s)
   .replace(/`([^`]+)`/g, "<code>$1</code>")
   .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
@@ -671,12 +674,20 @@ const inline = (s) => esc(s)
   .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
 const indentOf = (l) => l.match(/^ */)[0].length;
 const LIST_ITEM = /^( *)([-*]|\d+\.) +(.*)$/;
+const HEADING = /^(#{2,4}) +(.*)$/;
 function md(src) {
   const lines = src.split("\n");
   const out = [];
   for (let i = 0; i < lines.length;) {
     const line = lines[i];
     if (!line.trim()) { i++; continue; }
+    const heading = line.match(HEADING);
+    if (heading) {
+      const level = heading[1].length + 1; // ## -> h3 (the page title is the h1)
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      i++;
+      continue;
+    }
     if (line.trim().startsWith("```")) {
       const code = [];
       for (i++; i < lines.length && !lines[i].trim().startsWith("```"); i++) code.push(lines[i]);
@@ -698,12 +709,32 @@ function md(src) {
       out.push(ordered ? `<ol start="${parseInt(first[2], 10)}">${items.join("")}</ol>` : `<ul>${items.join("")}</ul>`);
       continue;
     }
+    if (first) {
+      // a list indented more than its surroundings: render that block as if it weren't
+      const pad = first[1].length, block = [];
+      for (; i < lines.length && (!lines[i].trim() || indentOf(lines[i]) >= pad); i++) block.push(lines[i].slice(pad));
+      out.push(md(block.join("\n")));
+      continue;
+    }
     const para = [];
     const why = (l) => l.trim().startsWith("*Why:*"); // the "Why" behind each question gets its own paragraph
-    for (; i < lines.length && lines[i].trim() && !lines[i].trim().startsWith("```") && !LIST_ITEM.test(lines[i]) && !(para.length && why(lines[i])); i++) para.push(lines[i].trim());
+    for (; i < lines.length && lines[i].trim() && !lines[i].trim().startsWith("```") && !LIST_ITEM.test(lines[i]) && !HEADING.test(lines[i]) && !(para.length && why(lines[i])); i++) para.push(lines[i].trim());
     out.push(`<p${why(para[0]) ? ' class="why"' : ""}>${inline(para.join(" "))}</p>`);
   }
   return out.join("");
+}
+
+// ---------- OneTrust Connectors: consent_fanout/connectors/<doc>.md as a reference page
+async function openConnector(doc) {
+  $("c-title").textContent = doc || "OneTrust Connectors";
+  $("c-body").innerHTML = `<p class="empty">Loading…</p>`;
+  try {
+    const { title, markdown } = await API(`/api/connectors/${encodeURIComponent(doc)}`);
+    $("c-title").textContent = title;
+    $("c-body").innerHTML = md(markdown) + `<p class="q-source">Source: <code>consent_fanout/connectors/${esc(doc)}.md</code></p>`;
+  } catch (err) {
+    $("c-body").innerHTML = `<div class="callout err">${esc(err.message)}</div>`;
+  }
 }
 
 const qs = { doc: null, data: null, open: {}, error: "" };

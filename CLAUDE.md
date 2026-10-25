@@ -101,7 +101,7 @@ lives at root.
 
 Local Node.js app with three flows in a left sidebar: **Event registration** (EMO),
 **Account registration** (CL6 / Vanguard 365) and **Preference centre** (signed-in user).
-Below them, **Open questions** shows each `consent_fanout/<doc>.md` (so far `SFMC`) question
+Below them, **Open questions** shows each `consent_fanout/<doc>.md` (so far `SFMC` and `AEP`) question
 by question, read live from the file, with comments saved to
 `consent_fanout/comments/<doc>.json`. To add a file, add its name to `QUESTION_DOCS` in
 `server.js` and a sidebar link in `public/index.html`.
