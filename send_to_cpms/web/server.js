@@ -8,7 +8,8 @@
 // cpms/{success,fail}/<eventId>/<run>.json.
 //
 // The browser never sees AWS credentials — they're read here from the repo-root .env.prod when
-// it exists (local use), otherwise from environment variables (the server, via systemd).
+// it exists (local use), otherwise from environment variables (the server, via systemd); with no
+// keys at all, the AWS SDK's default credential chain (e.g. AWS_PROFILE) is used.
 // Server settings: PORT, HOST, COOKIE_SECURE=1 behind HTTPS — see INSTALL.md.
 //
 // Updating consent — neither page shows or edits settings; both identify the person, ask OneTrust
@@ -225,17 +226,20 @@ function loadEnv(path) {
 }
 
 // .env.prod (if present) first, then real environment variables win — on the server there's no file.
+// Region and bucket are required. Keys are optional: without them the AWS SDK's normal credential
+// chain is used (AWS_PROFILE / SSO / environment), so a local install needs no stored keys.
 const ENV_KEYS = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION", "AWS_BUCKET_NAME"];
 const env = { ...loadEnv(join(REPO_ROOT, ".env.prod")),
   ...Object.fromEntries(ENV_KEYS.filter((k) => process.env[k]).map((k) => [k, process.env[k]])) };
-const missing = ENV_KEYS.filter((k) => !env[k]);
+const missing = ["AWS_DEFAULT_REGION", "AWS_BUCKET_NAME"].filter((k) => !env[k]);
+if (Boolean(env.AWS_ACCESS_KEY_ID) !== Boolean(env.AWS_SECRET_ACCESS_KEY)) missing.push("AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (both or neither)");
 if (missing.length) {
   console.error(`Missing settings: ${missing.join(", ")} — set them in .env.prod (local) or the environment (server).`);
   process.exit(1);
 }
 const awsConfig = {
   region: env.AWS_DEFAULT_REGION,
-  credentials: { accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY },
+  ...(env.AWS_ACCESS_KEY_ID && { credentials: { accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY } }),
 };
 const BUCKET = env.AWS_BUCKET_NAME;
 const eventBridge = new EventBridgeClient(awsConfig);

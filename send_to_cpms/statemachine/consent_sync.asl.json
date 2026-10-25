@@ -1,0 +1,483 @@
+{
+  "Comment": "CPMS consent sync \u2014 steps 1-7. See design.md -> Step Function states.",
+  "StartAt": "ValidateSource",
+  "States": {
+    "ValidateSource": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ValidateSourceArn}",
+        "Payload.$": "$.sourceEvent"
+      },
+      "ResultSelector": {
+        "valid.$": "$.Payload.valid",
+        "errors.$": "$.Payload.errors"
+      },
+      "ResultPath": "$.validation",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "ResultPath": "$.error",
+          "Next": "InfraFailure"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "ValidateSourceFailed"
+        }
+      ],
+      "Next": "IsSourceValid"
+    },
+    "IsSourceValid": {
+      "Type": "Choice",
+      "Default": "ValidateSourceFailed",
+      "Choices": [
+        {
+          "Variable": "$.validation.valid",
+          "BooleanEquals": true,
+          "Next": "TransformCanonical"
+        }
+      ]
+    },
+    "ValidateSourceFailed": {
+      "Type": "Pass",
+      "Result": "ValidateSource",
+      "ResultPath": "$.failedStep",
+      "Next": "RecordFailure"
+    },
+    "TransformCanonical": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${TransformCanonicalArn}",
+        "Payload.$": "$.sourceEvent"
+      },
+      "ResultSelector": {
+        "record.$": "$.Payload"
+      },
+      "ResultPath": "$.canonical",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "ResultPath": "$.error",
+          "Next": "InfraFailure"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TransformCanonicalFailed"
+        }
+      ],
+      "Next": "FilterStale"
+    },
+    "TransformCanonicalFailed": {
+      "Type": "Pass",
+      "Result": "TransformCanonical",
+      "ResultPath": "$.failedStep",
+      "Next": "RecordFailure"
+    },
+    "FilterStale": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${FilterStaleArn}",
+        "Payload.$": "$.canonical.record"
+      },
+      "ResultSelector": {
+        "record.$": "$.Payload.record",
+        "dropped.$": "$.Payload.dropped",
+        "allStale.$": "$.Payload.allStale",
+        "etag.$": "$.Payload.etag"
+      },
+      "ResultPath": "$.staleCheck",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "ResultPath": "$.error",
+          "Next": "InfraFailure"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FilterStaleFailed"
+        }
+      ],
+      "Next": "IsAllStale"
+    },
+    "FilterStaleFailed": {
+      "Type": "Pass",
+      "Result": "FilterStale",
+      "ResultPath": "$.failedStep",
+      "Next": "RecordFailure"
+    },
+    "IsAllStale": {
+      "Type": "Choice",
+      "Default": "BuildPayload",
+      "Choices": [
+        {
+          "Variable": "$.staleCheck.allStale",
+          "BooleanEquals": true,
+          "Next": "SkippedStale"
+        }
+      ]
+    },
+    "SkippedStale": {
+      "Type": "Pass",
+      "Parameters": {
+        "outcome": "skipped_stale",
+        "dropped.$": "$.staleCheck.dropped",
+        "eventId.$": "$.canonical.record.header.eventId"
+      },
+      "ResultPath": "$.result",
+      "Next": "WriteSuccess"
+    },
+    "BuildPayload": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${BuildPayloadArn}",
+        "Payload.$": "$.staleCheck.record"
+      },
+      "ResultSelector": {
+        "requests.$": "$.Payload.requests"
+      },
+      "ResultPath": "$.payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "ResultPath": "$.error",
+          "Next": "InfraFailure"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "BuildPayloadFailed"
+        }
+      ],
+      "Next": "Enqueue"
+    },
+    "BuildPayloadFailed": {
+      "Type": "Pass",
+      "Result": "BuildPayload",
+      "ResultPath": "$.failedStep",
+      "Next": "RecordFailure"
+    },
+    "Enqueue": {
+      "Type": "Map",
+      "ItemsPath": "$.payload.requests",
+      "MaxConcurrency": 1,
+      "ItemSelector": {
+        "request.$": "$$.Map.Item.Value",
+        "groupId.$": "$.canonical.record.subject.subjectId"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "SendRequest",
+        "States": {
+          "SendRequest": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage",
+            "Parameters": {
+              "QueueUrl": "${OutboundQueueUrl}",
+              "MessageBody.$": "$.request",
+              "MessageGroupId.$": "$.groupId"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 4,
+                "BackoffRate": 2
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "InfraFailure"
+        }
+      ],
+      "Next": "AdvanceWatermark"
+    },
+    "AdvanceWatermark": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${AdvanceWatermarkArn}",
+        "Payload": {
+          "record.$": "$.staleCheck.record",
+          "etag.$": "$.staleCheck.etag"
+        }
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "ResultPath": "$.watermark",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "ResultPath": "$.error",
+          "Next": "InfraFailure"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "SentWatermarkNotAdvanced"
+        }
+      ],
+      "Next": "Sent"
+    },
+    "SentWatermarkNotAdvanced": {
+      "Type": "Pass",
+      "Parameters": {
+        "outcome": "sent",
+        "warning": "watermark not advanced",
+        "error.$": "$.error",
+        "requestsQueued.$": "States.ArrayLength($.payload.requests)",
+        "requests.$": "$.payload.requests",
+        "dropped.$": "$.staleCheck.dropped"
+      },
+      "ResultPath": "$.result",
+      "Next": "WriteSuccess"
+    },
+    "Sent": {
+      "Type": "Pass",
+      "Parameters": {
+        "outcome": "sent",
+        "requestsQueued.$": "States.ArrayLength($.payload.requests)",
+        "requests.$": "$.payload.requests",
+        "dropped.$": "$.staleCheck.dropped",
+        "watermarkAdvanced.$": "$.watermark.result.advanced"
+      },
+      "ResultPath": "$.result",
+      "Next": "WriteSuccess"
+    },
+    "WriteSuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
+      "Parameters": {
+        "Bucket": "${Bucket}",
+        "Key.$": "States.Format('cpms/success/{}/{}.json', $.recordId, $$.Execution.Name)",
+        "Body.$": "$",
+        "ContentType": "application/json"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.recordError",
+          "Next": "Done"
+        }
+      ],
+      "Next": "Done"
+    },
+    "Done": {
+      "Type": "Pass",
+      "OutputPath": "$.result",
+      "End": true
+    },
+    "RecordFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
+      "Parameters": {
+        "Bucket": "${Bucket}",
+        "Key.$": "States.Format('cpms/fail/{}/{}.json', $.recordId, $$.Execution.Name)",
+        "Body.$": "$",
+        "ContentType": "application/json"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "InfraFailure"
+        }
+      ],
+      "Next": "EmitFailureMetric"
+    },
+    "EmitFailureMetric": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:cloudwatch:putMetricData",
+      "Parameters": {
+        "Namespace": "CPMS",
+        "MetricData": [
+          {
+            "MetricName": "DataFailures",
+            "Value": 1,
+            "Unit": "Count"
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.metricError",
+          "Next": "Rejected"
+        }
+      ],
+      "Next": "Rejected"
+    },
+    "Rejected": {
+      "Type": "Pass",
+      "Parameters": {
+        "outcome": "rejected",
+        "failedStep.$": "$.failedStep",
+        "failRecord.$": "States.Format('s3://${Bucket}/cpms/fail/{}/{}.json', $.recordId, $$.Execution.Name)"
+      },
+      "End": true
+    },
+    "InfraFailure": {
+      "Type": "Fail",
+      "Error": "InfraFailure",
+      "Cause": "AWS-side failure after retries; SQS will retry the message"
+    }
+  }
+}

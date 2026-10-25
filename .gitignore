@@ -19,3 +19,7 @@ node_modules/
 
 # Stub CRM for the local test app (holds email addresses)
 send_to_cpms/web/data/
+
+# SAM build output and per-user deploy settings
+.aws-sam/
+samconfig.toml

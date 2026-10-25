@@ -848,6 +848,7 @@ policies scope to `cpms-*` and makes every project resource easy to find.
 | `alarm` | CloudWatch alarm |
 | `secret` | Secrets Manager secret |
 | `kms` | KMS key (alias) |
+| `layer` | Lambda layer |
 | `elasticache` | ElastiCache cluster (prod only) |
 | `vpc` | VPC (prod only) |
 
@@ -885,6 +886,7 @@ S3 "components" are `cpms/<store>/` prefixes inside the existing bucket.
 | Taxonomy updater (prod only) | `cpms-lambda-taxonomy-updater` |
 | Taxonomy cache (prod only) | `cpms-elasticache-taxonomy` |
 | VPC (prod only) | `cpms-vpc` |
+| Shared code layer (template stacks only) | `cpms-layer-shared` |
 
 Each Lambda / the state machine gets its own role, `cpms-role-<its name minus cpms->`,
 e.g. `cpms-role-lambda-validate-source`, `cpms-role-sfn-consent-sync`.

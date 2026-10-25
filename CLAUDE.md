@@ -23,6 +23,9 @@ a different flow. Each flow folder is internally structured the same way:
   lambdas/<name>/      - Lambda code (handler.py + optional requirements.txt), one folder per function
   deploy/              - boto3 scripts that create/update this flow's AWS resources and
                          upload schemas/taxonomy (idempotent — safe to re-run)
+  template.yaml        - (send_to_cpms) the same resources as one AWS SAM / CloudFormation
+                         stack, for deploying into any AWS account
+  statemachine/        - (send_to_cpms) the state machine definition template.yaml deploys
 ```
 
 Root only holds this `CLAUDE.md`, `README.md`, the flow folders and `.github/` (the deploy
@@ -130,6 +133,16 @@ deployed and run on their own. Re-run the deploy scripts only after changing the
   machine (it ends with an AccessDenied on the failure alarm until the IAM user gets
   `cloudwatch:PutMetricAlarm`; everything before that is applied)
 - `python3 send_to_cpms/deploy/setup_ingestion.py` — after editing the bus / rule / ingestion queue
+
+**Deploying into another AWS account:** `send_to_cpms/DEPLOY_NEW_ACCOUNT.md` — `sam build && sam
+deploy` with `send_to_cpms/template.yaml` creates the whole backend (incl. its own bucket,
+`cpms-<account>-<region>`) as stack `cpms`; then `upload_assets.py --bucket …`, and the test app
+runs against it with only `AWS_DEFAULT_REGION` + `AWS_BUCKET_NAME` in `.env.prod` (no keys — the
+AWS profile is used). Our prod account is still managed by the `deploy/` scripts.
+- **Keep the two in step:** `deploy/setup_processing.py` is the source of the state machine's
+  definition; after changing it, run `python3 send_to_cpms/deploy/export_state_machine.py` to
+  regenerate `statemachine/consent_sync.asl.json`. A new or changed resource in a deploy script
+  must also be made in `template.yaml` (check with `sam validate --lint`).
 
 **On a server:** `send_to_cpms/web/INSTALL.md` sets it up behind nginx (HTTPS + basic auth,
 systemd service `cpms-web`, settings from `/etc/cpms/cpms-web.env` instead of `.env.prod`);

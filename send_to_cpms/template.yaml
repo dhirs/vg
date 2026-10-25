@@ -1,0 +1,554 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  CPMS send_to_cpms backend — source events → EventBridge → ingestion FIFO → Express state machine
+  (validate → canonical → filter stale → OneTrust receipts) → outbound FIFO. The same resources the
+  deploy/ scripts create, as one stack for any AWS account. Guide: DEPLOY_NEW_ACCOUNT.md.
+
+Parameters:
+  OneTrustHost:
+    Type: String
+    Default: privacyportaltrial.onetrust.com
+    Description: OneTrust tenant host used in the generated receipt URLs (nothing is sent yet).
+  OneTrustCollectionPointJwt:
+    Type: String
+    Default: dummy-collection-point-jwt
+    NoEcho: true
+    Description: Collection point JWT placed in generated receipts. A dummy is fine until OneTrust is connected.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Handler: handler.handler
+    MemorySize: 256
+    Timeout: 30
+    Tags:
+      project: cpms
+    Environment:
+      Variables:
+        BUCKET: !Ref Bucket
+        PREFIX: cpms
+
+Resources:
+  # ---------------------------------------------------------------- storage
+  # All CPMS data lives under cpms/ in this bucket: schemas, taxonomy, watermarks, success/fail records.
+  Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain          # keep the records if the stack is deleted
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub cpms-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: project
+          Value: cpms
+
+  # ---------------------------------------------------------------- ingestion
+  EventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: cpms-eventbus-consent
+      Tags:
+        - Key: project
+          Value: cpms
+
+  # EventBridge target DLQs must be standard (non-FIFO) queues.
+  RuleDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: cpms-sqs-rule-dlq
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: project
+          Value: cpms
+
+  IngestionDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: cpms-sqs-ingestion-dlq.fifo
+      FifoQueue: true
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: project
+          Value: cpms
+
+  IngestionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: cpms-sqs-ingestion.fifo
+      FifoQueue: true
+      SqsManagedSseEnabled: true
+      ContentBasedDeduplication: true        # EventBridge supplies no deduplication ID
+      DeduplicationScope: messageGroup       # high-throughput FIFO: ordering/dedup per email
+      FifoThroughputLimit: perMessageGroupId
+      VisibilityTimeout: 1980                # 6 × the consumer's 330 s timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt IngestionDlq.Arn
+        maxReceiveCount: 5
+      Tags:
+        - Key: project
+          Value: cpms
+
+  IngestRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: cpms-rule-ingest
+      EventBusName: !Ref EventBus
+      Description: All CPMS source events -> ingestion FIFO queue (MessageGroupId = subject email)
+      State: ENABLED
+      EventPattern:
+        source:
+          - prefix: cpms.
+      Targets:
+        - Id: ingestion-fifo
+          Arn: !GetAtt IngestionQueue.Arn
+          SqsParameters:
+            MessageGroupId: $.detail.subject.identifierValue   # each event's email = its FIFO group
+          DeadLetterConfig:
+            Arn: !GetAtt RuleDlq.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 185
+            MaximumEventAgeInSeconds: 86400
+
+  # Only the rule may send to the ingestion queue and its DLQ.
+  IngestionQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref IngestionQueue
+        - !Ref RuleDlq
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCpmsRuleIngest
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource:
+              - !GetAtt IngestionQueue.Arn
+              - !GetAtt RuleDlq.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt IngestRule.Arn
+
+  # ---------------------------------------------------------------- outbound
+  OutboundDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: cpms-sqs-outbound-dlq.fifo
+      FifoQueue: true
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: project
+          Value: cpms
+
+  OutboundQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: cpms-sqs-outbound.fifo
+      FifoQueue: true
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600        # SQS maximum — undispatched requests expire after this
+      ContentBasedDeduplication: true
+      DeduplicationScope: messageGroup
+      FifoThroughputLimit: perMessageGroupId
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OutboundDlq.Arn
+        maxReceiveCount: 5
+      Tags:
+        - Key: project
+          Value: cpms
+
+  # ---------------------------------------------------------------- shared code
+  # lambdas/shared/*.py (watermark.py), used by the filter-stale and advance-watermark steps.
+  SharedLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: cpms-layer-shared
+      ContentUri: lambdas/shared/
+      CompatibleRuntimes:
+        - python3.12
+    Metadata:
+      BuildMethod: python3.12
+
+  # ---------------------------------------------------------------- step Lambdas + their roles
+  ValidateSourceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: cpms-role-lambda-validate-source
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: cpms-inline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource:
+                  - !Sub ${Bucket.Arn}/cpms/schemas/*
+                  - !Sub ${Bucket.Arn}/cpms/taxonomy/*
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt Bucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: [cpms/schemas/*, cpms/taxonomy/*]
+      Tags:
+        - Key: project
+          Value: cpms
+
+  ValidateSource:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: cpms-lambda-validate-source
+      CodeUri: lambdas/validate_source/
+      Role: !GetAtt ValidateSourceRole.Arn
+
+  TransformCanonicalRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: cpms-role-lambda-transform-canonical
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: cpms-inline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource:
+                  - !Sub ${Bucket.Arn}/cpms/taxonomy/*
+                  - !Sub ${Bucket.Arn}/cpms/schemas/*
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt Bucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: [cpms/taxonomy/*, cpms/schemas/*]
+      Tags:
+        - Key: project
+          Value: cpms
+
+  TransformCanonical:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: cpms-lambda-transform-canonical
+      CodeUri: lambdas/transform_canonical/
+      Role: !GetAtt TransformCanonicalRole.Arn
+
+  FilterStaleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: cpms-role-lambda-filter-stale
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: cpms-inline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub ${Bucket.Arn}/cpms/watermarks/*
+              - Effect: Allow
+                Action: s3:ListBucket       # so a missing watermark is NoSuchKey, not AccessDenied
+                Resource: !GetAtt Bucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: [cpms/watermarks/*]
+      Tags:
+        - Key: project
+          Value: cpms
+
+  FilterStale:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: cpms-lambda-filter-stale
+      CodeUri: lambdas/filter_stale/
+      Role: !GetAtt FilterStaleRole.Arn
+      Layers:
+        - !Ref SharedLayer
+
+  BuildPayloadRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: cpms-role-lambda-build-payload
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: cpms-inline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource:
+                  - !Sub ${Bucket.Arn}/cpms/taxonomy/*
+                  - !Sub ${Bucket.Arn}/cpms/schemas/*
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt Bucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: [cpms/taxonomy/*, cpms/schemas/*]
+      Tags:
+        - Key: project
+          Value: cpms
+
+  BuildPayload:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: cpms-lambda-build-payload
+      CodeUri: lambdas/build_payload/
+      Role: !GetAtt BuildPayloadRole.Arn
+      Environment:
+        Variables:
+          ONETRUST_HOST: !Ref OneTrustHost
+          ONETRUST_COLLECTION_POINT_JWT: !Ref OneTrustCollectionPointJwt
+
+  AdvanceWatermarkRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: cpms-role-lambda-advance-watermark
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: cpms-inline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub ${Bucket.Arn}/cpms/watermarks/*
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt Bucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: [cpms/watermarks/*]
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub ${Bucket.Arn}/cpms/watermarks/*
+      Tags:
+        - Key: project
+          Value: cpms
+
+  AdvanceWatermark:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: cpms-lambda-advance-watermark
+      CodeUri: lambdas/advance_watermark/
+      Role: !GetAtt AdvanceWatermarkRole.Arn
+      Layers:
+        - !Ref SharedLayer
+
+  # ---------------------------------------------------------------- state machine
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/vendedlogs/states/cpms-sfn-consent-sync
+      RetentionInDays: 30
+
+  StateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: cpms-role-sfn-consent-sync
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: states.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: cpms-inline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt ValidateSource.Arn
+                  - !Sub ${ValidateSource.Arn}:*
+                  - !GetAtt TransformCanonical.Arn
+                  - !Sub ${TransformCanonical.Arn}:*
+                  - !GetAtt FilterStale.Arn
+                  - !Sub ${FilterStale.Arn}:*
+                  - !GetAtt BuildPayload.Arn
+                  - !Sub ${BuildPayload.Arn}:*
+                  - !GetAtt AdvanceWatermark.Arn
+                  - !Sub ${AdvanceWatermark.Arn}:*
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource:
+                  - !Sub ${Bucket.Arn}/cpms/fail/*
+                  - !Sub ${Bucket.Arn}/cpms/success/*
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt OutboundQueue.Arn
+              - Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: CPMS
+              - Effect: Allow             # Step Functions log delivery to CloudWatch Logs
+                Resource: "*"
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+      Tags:
+        - Key: project
+          Value: cpms
+
+  StateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: cpms-sfn-consent-sync
+      Type: EXPRESS                # required for the consumer's StartSyncExecution
+      DefinitionUri: statemachine/consent_sync.asl.json
+      DefinitionSubstitutions:
+        ValidateSourceArn: !GetAtt ValidateSource.Arn
+        TransformCanonicalArn: !GetAtt TransformCanonical.Arn
+        FilterStaleArn: !GetAtt FilterStale.Arn
+        BuildPayloadArn: !GetAtt BuildPayload.Arn
+        AdvanceWatermarkArn: !GetAtt AdvanceWatermark.Arn
+        OutboundQueueUrl: !Ref OutboundQueue
+        Bucket: !Ref Bucket
+      Role: !GetAtt StateMachineRole.Arn
+      Logging:
+        Level: ALL
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StateMachineLogGroup.Arn
+      Tags:
+        project: cpms
+
+  # ---------------------------------------------------------------- FIFO consumer
+  FifoConsumerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: cpms-role-lambda-fifo-consumer
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: cpms-inline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt IngestionQueue.Arn
+              - Effect: Allow
+                Action: states:StartSyncExecution
+                Resource: !Ref StateMachine
+      Tags:
+        - Key: project
+          Value: cpms
+
+  # Waits for each run to finish before acknowledging: one run at a time per person.
+  FifoConsumer:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: cpms-lambda-fifo-consumer
+      CodeUri: lambdas/fifo_consumer/
+      Role: !GetAtt FifoConsumerRole.Arn
+      Timeout: 330                 # Express sync runs max 300 s; the consumer must outlive that
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref StateMachine
+      Events:
+        Ingestion:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt IngestionQueue.Arn
+            BatchSize: 1
+
+  # ---------------------------------------------------------------- observability
+  FailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: cpms-alarm-failures
+      AlarmDescription: Data/logic failures recorded under cpms/fail/ — these won't fix themselves on retry.
+      Namespace: CPMS
+      MetricName: DataFailures
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  BucketName:
+    Description: Put this in .env.prod as AWS_BUCKET_NAME, and upload schemas/taxonomy into it.
+    Value: !Ref Bucket
+  EventBusName:
+    Value: !Ref EventBus
+  IngestionQueueUrl:
+    Value: !Ref IngestionQueue
+  OutboundQueueUrl:
+    Description: Generated OneTrust receipts wait here.
+    Value: !Ref OutboundQueue
+  StateMachineArn:
+    Value: !Ref StateMachine

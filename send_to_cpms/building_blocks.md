@@ -21,6 +21,14 @@ Inventory of infrastructure components. For *why* decisions were made this way, 
 | Ingestion DLQ | SQS FIFO `cpms-sqs-ingestion-dlq.fifo` | Receives a message after it has failed processing 5 times (e.g. consumer Lambda crashing or timing out), so one stuck event can't block that email's line forever. Must be FIFO because its source queue is FIFO. |
 | FIFO consumer | Lambda, SQS event source mapping (batch size 1) | Consumes the ingestion FIFO queue. Calls `StartSyncExecution` and **blocks until the Step Function run completes** before acknowledging the message — this is what actually enforces one-in-flight-execution-per-subject, not just the queue's existence. Raises (→ SQS retry, DLQ after 5) only when the run itself FAILED; a rejected event ends SUCCEEDED and is acknowledged. `cpms-lambda-fifo-consumer`, code in `lambdas/fifo_consumer/`, created by `deploy/setup_processing.py`. |
 
+## Packaging
+
+| Block | Type | What it does |
+|---|---|---|
+| Stack template | AWS SAM / CloudFormation `send_to_cpms/template.yaml` | Every resource below as one stack (stack name `cpms`), for deploying into any AWS account. Creates its own bucket `cpms-<account-id>-<region>` (kept if the stack is deleted). Guide: `DEPLOY_NEW_ACCOUNT.md`. Our prod account still uses the `deploy/` scripts. |
+| Shared code layer | Lambda layer `cpms-layer-shared` (template only) | `lambdas/shared/*.py` (`watermark.py`) for the filter-stale and advance-watermark steps. The `deploy/` scripts copy the same files into each zip instead. |
+| State machine definition | `statemachine/consent_sync.asl.json` | What the template deploys; regenerated from `deploy/setup_processing.py` by `deploy/export_state_machine.py`. |
+
 ## Orchestration — Step Function (single, all sources)
 
 | Block | Type | What it does |

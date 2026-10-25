@@ -1,4 +1,8 @@
-"""Shared AWS setup for this flow's scripts: reads creds from the repo-root .env.prod."""
+"""Shared AWS setup for this flow's scripts: reads creds from the repo-root .env.prod.
+
+Without keys in .env.prod (e.g. a fresh account deployed with template.yaml), boto3's normal
+credential chain is used instead — an AWS CLI profile (AWS_PROFILE) or environment variables.
+"""
 from pathlib import Path
 
 import boto3
@@ -11,6 +15,8 @@ PREFIX = "cpms"  # everything this project stores in the shared bucket lives und
 
 def load_env(path=REPO_ROOT / ".env.prod"):
     env = {}
+    if not path.exists():
+        return env
     for line in path.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
@@ -21,6 +27,8 @@ def load_env(path=REPO_ROOT / ".env.prod"):
 
 def client(service):
     env = load_env()
+    if not env.get("AWS_ACCESS_KEY_ID"):
+        return boto3.client(service, region_name=env.get("AWS_DEFAULT_REGION"))  # default credential chain
     return boto3.client(
         service,
         aws_access_key_id=env["AWS_ACCESS_KEY_ID"],
@@ -38,4 +46,7 @@ def s3_client():
 
 
 def bucket_name():
-    return load_env()["AWS_BUCKET_NAME"]
+    bucket = load_env().get("AWS_BUCKET_NAME")
+    if not bucket:
+        raise SystemExit("No bucket: set AWS_BUCKET_NAME in .env.prod (or pass --bucket where supported).")
+    return bucket
