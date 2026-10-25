@@ -36,7 +36,10 @@ workflow — GitHub requires it at the root) — no design content lives at root
 - **`send_to_cpms/`** — source triggers → OneTrust consent/preference update. Covers:
   EventBridge ingestion, the single Step Function shared by all sources (validate → transform → canonical →
   build OneTrust payload → enqueue), the taxonomy reference/cache, and success/fail
-  recording. This is the flow designed so far.
+  recording. This is the flow designed so far. Its two new-consent sources, **EMO** (event
+  registration) and **CL6** (Vanguard 365 account registration), are Spring Boot services
+  owned by other Vanguard teams — `send_to_cpms/FAS_Services.md` describes them, who to
+  contact, and the exact event each team must be told to publish.
 
 - *(discovery)* **`consent_fanout/`** — getting OneTrust consent updates into downstream
   systems (SFMC, Dynamics CRM, AEP, Marketo), preferably through OneTrust's own
