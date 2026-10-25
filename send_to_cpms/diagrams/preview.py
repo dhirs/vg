@@ -1,6 +1,6 @@
 """Render a .drawio diagram as a local HTML page and open it in the browser.
 
-Usage: python3 preview.py [diagram.drawio]   (defaults to Send_To_OneTrust.drawio)
+Usage: python3 preview.py [diagram.drawio]   (defaults to New_Consent_Record.drawio)
 
 The diagram XML is embedded in the generated page and drawn client-side by the
 diagrams.net viewer script, so the diagram itself is never uploaded anywhere.
@@ -13,7 +13,7 @@ import webbrowser
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
-src = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else here / "Send_To_OneTrust.drawio"
+src = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else here / "New_Consent_Record.drawio"
 out = src.with_suffix(".preview.html")
 
 # zoom > 1 and no fit-to-width, so the diagram renders at readable size (scroll to pan)

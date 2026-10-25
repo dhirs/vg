@@ -80,10 +80,11 @@ consent and provenance data (not deferred to later).
     `status: granted`, `captureMethod: implied_by_account_creation`. Accepting the T&Cs and
     IP agreement is not a CPMS purpose (see **Taxonomy scope**). Profile fields are not
     sent to CPMS.
-  - **Update** (`eventType: preference_update`, not built yet): load the person's current
-    settings from OneTrust first, then send only what **changed** — `opt_in` for things
-    switched on, explicit `opt_out` for things switched off. Needs a OneTrust read path
-    and authentication of the person — see **Open items**.
+  - **Update** (`eventType: preference_update`): send only what **changed** — `opt_in` for
+    things switched on, explicit `opt_out` for things switched off. Our own pages don't
+    send these: an existing person changes preferences in OneTrust's preference centre
+    (see **Updating consent**). The event type stays for sources that capture changes
+    themselves.
   - Either way the pipeline is the same: it builds receipts from whatever items arrive.
 - **Emails must be sent lowercased and trimmed** (`identifierType: "email"` →
   `identifierValue` must match a no-uppercase, no-whitespace email pattern, max 100
@@ -677,76 +678,126 @@ email through the EMO collection point — which is why that setting matters.
 - The `sourceSystem` → collection point mapping, the Secrets Manager secrets, the KMS key
   and the dispatcher don't exist yet.
 
-## Preference centre: a signed-in user reads and changes their preferences
+## Updating consent: identify the person, then hand over to OneTrust's preference centre
 
-The **update** flow: work out who the person is, load their current settings, let them
-change them, and send only the changes. Built in the test app (`web/`, "Preference
-centre") with stubs; the real version needs CRM and OneTrust read access.
+An existing person changes their preferences **in OneTrust's hosted preference centre**, not
+in a page of ours. Our side only works out **who the person is** (their email), asks OneTrust
+for that person's **magic link**, and redirects them to it. OneTrust shows their current
+settings, records whatever they change, and the consent fanout (`consent_fanout/`: OneTrust →
+SFMC, OneTrust → AEP) takes it from there. So no `preference_update` is built or sent by these
+pages, and there's no read of current settings on our side.
+
+There are two ways in; they differ only in how the email is found. Each has its own diagram:
+`diagrams/Email_Consent_Update.drawio` (marketing email) and
+`diagrams/Website_Consent_Update.drawio` (signed-in website user). New consent records from EMO
+and CL6 are `diagrams/New_Consent_Record.drawio`.
+
+**From a marketing email (Marketo).**
+
+1. **Email** — the "Manage your preferences" link in a Marketo email points at the intermediate
+   app's **Marketo endpoint** and carries the recipient's **pre-encrypted lead ID**, not the lead
+   ID itself: `https://<cpms-host>/marketo/preferences?ref={{lead.cpmsPrefRef}}` (see **The email
+   link's `ref`** below). The endpoint is what tells the app the `ref` is a Marketo
+   pre-encrypted lead ID — there's no "source" parameter to trust or tamper with. Another
+   entry point (e.g. a different email platform) would get its own endpoint.
+2. **Decrypt** — the intermediate app decrypts `ref` back to the lead ID. A `ref` that wasn't
+   made with our key fails to decrypt and goes no further.
+3. **Marketo lookup** — lead ID → email:
+   `GET https://<munchkin-id>.mktorest.com/rest/v1/lead/<leadId>.json?fields=email,cpmsPrefRef`
+   (Marketo REST API, OAuth client-credentials token).
+4. **OneTrust magic link** — email → link token (step below).
+5. **Redirect** to the magic link.
+
+**From the secure portal (signed-in user).**
 
 1. **Signed in?** The person must have a Vanguard 365 session; if not, they sign in first.
 2. **Link** — the page offers a link carrying the person's **local ID** (their CL6 / CRM
-   identifier), e.g. `…/preferences?localId=CL6-100234`.
-3. **CRM lookup** — local ID → email.
-4. **OneTrust lookup** — email → the subject's current consent and preferences.
-5. **Show the current settings, editable** — grouped the way OneTrust stores them: each
-   **purpose** (with an on/off switch), and under it its **topics**, each with
-   email / SMS / push switches; plus a single **"Opt out of all marketing contact"**
-   switch. Switching a purpose **off** greys out its topics and sends **just the purpose
-   withdrawal** — step 2 derives the topic × channel opt-outs; clicking a topic under an
-   off purpose turns the purpose back on. Other rules:
-   - **Registration defaults.** A topic × channel with no explicit choice yet takes its
-     value from the topic's purpose: the registration pages' "you will also receive
-     marketing communications" means **email on** for every topic under a granted purpose;
-     SMS and push stay off until chosen. *(Assumption — confirm.)*
-   - **Opt out of all marketing contact** switches **every** purpose and every topic ×
-     channel off (the taxonomy only holds communication purposes, so "all" means all of
-     them — `marketing_communications`, renamed from `marketing_email` which wrongly
-     suggested email only, and `event_communications`). It's sent as **every purpose
-     withdrawn**, even ones that look off already — because the page loaded CPMS's view, not
-     OneTrust's, and a changes-only opt-out could leave behind something another system
-     switched on at OneTrust. Step 2 derives the opt-out for every topic × channel. Switching it back off restores what was loaded (or, if the person was already
-     opted out, every purpose on with email for their topics).
-   - **Enabling anything — a purpose or a channel — switches the full opt-out off**, starting
-     from everything off plus just what was enabled.
-   - **A purpose with topics is on exactly when at least one of its topic × channels is
-     on.** Switching a topic on (re)grants its parent purpose, and deselecting a purpose's
-     last topic × channel switches the purpose off (so saving sends it `withdrawn`). Switching
-     a purpose on with nothing selected turns email on for its topics (the registration
-     default). A receipt can never say "purpose withdrawn" and "topic on" at once, or
-     "purpose on" with no topics.
-   - **No purpose left on = full opt-out.** When every purpose is switched off (directly,
-     or by deselecting all their topics), "Opt out of all marketing contact" switches
-     itself on, so saving sends the full set: every purpose withdrawn and every topic ×
-     channel opted out. Clicking any channel afterwards opts back in to just that.
-6. **Save** — only what differs from what was loaded is sent, as a `source_event` with
-   `eventType: preference_update`, `sourceSystem: cl6`,
-   `captureMethod: preference_centre`. Switching something **off** is sent explicitly
-   (`withdrawn` for a purpose, `opt_out` for a topic × channel) — unlike a registration,
-   the person already has settings, so silence would leave the old "on" in place. The page
-   then waits for CPMS's result, shows what was sent to OneTrust, and reloads the settings.
+   identifier): `…/preferences?localId=CL6-100234`.
+3. **CRM lookup** — local ID → email. Only for the signed-in user's own local ID.
+4. **OneTrust magic link**, then **redirect**.
 
-**Ownership checks are the point of step 1.** The link alone must never be enough: the
-server only resolves a local ID that belongs to the **signed-in** user, only returns
-preferences for **that** user's email, and builds a `preference_update` with the subject
-taken from the session (never from the browser) and refuses to send one for anyone else.
-Otherwise changing the ID in the URL would expose — or change — someone else's settings.
+**The OneTrust magic link.** OneTrust's *Get Data Subject Token* API —
+`GET https://<hostname>/rest/api/consent/v4/datasubjects/linktokens` with header
+`identifier: <email>`, OAuth scope `CONSENT` — returns the data subject's link `token` and its
+`expiryDate`. The token, URL-encoded, is appended to the preference centre URL to make the
+magic link. These APIs are backend-only: the token request happens on our server, never in
+the browser.
 
-**OneTrust stand-in (dev).** With no OneTrust read access yet, step 4 is rebuilt from CPMS's
-own records, without scanning: the subject's watermark
-(`cpms/watermarks/<sha256(email)>.json`) lists every item CPMS has sent with the `eventId`
-of the latest decision, and that event's success record holds the status. Caveat shown on
-the page: this is *what CPMS last sent*, not necessarily OneTrust's state — another system
-may have changed OneTrust since.
+**Ownership checks.** The email is always worked out on the server, never taken from the
+browser. In the portal, the server only resolves a local ID that belongs to the signed-in
+user and only issues a magic link for that user's email, so changing the ID in the URL gets
+nothing. The email link can't use a session — the person isn't signed in — so it carries
+an encrypted value instead of the bare lead ID: lead IDs are sequential numbers, and a bare
+one could be edited to get someone else's magic link (and with it their email and
+preferences, and the ability to change them).
 
-**Stubs in the test app:**
+**The email link's `ref`: a pre-encrypted lead ID.**
+
+Marketo can't encrypt anything when it sends an email (its email scripting has no crypto
+functions), so the encrypted value is **made once per lead and stored on the lead** in a
+Marketo field, `cpmsPrefRef` (name to confirm). The email just prints the field.
+
+*Making it (once per lead):*
+1. A Marketo smart campaign — trigger *Lead is Created* (plus a one-off batch for existing
+   leads) — calls a webhook on the intermediate app, `cpms-lambda-pref-ref-issue`, with the
+   lead ID.
+2. The app encrypts the lead ID with **AES-256-GCM** and returns the result; the webhook's
+   *response mapping* writes it into `cpmsPrefRef`. Nothing else is stored anywhere.
+3. Format: `v1.<iv>.<ciphertext+tag>`, base64url, about 55 characters — safe in a URL as is.
+   - `v1` — key version, so the key can be rotated.
+   - `iv` — 12 random bytes, new for every encryption (never reused with the same key).
+   - plaintext — the lead ID; additional authenticated data `cpms-pref-ref:v1`, so a value
+     encrypted with the same key for any other purpose can't be passed off as a `ref`.
+   - the 16-byte GCM tag makes any edit to the value fail decryption.
+4. The webhook endpoint must only accept Marketo: a shared secret in a custom header (held
+   in Secrets Manager) plus Marketo's IP ranges. Otherwise anyone could ask it to encrypt any
+   lead ID and mint a valid `ref` — the same hole as a bare lead ID.
+
+*Reading it (every click) — what the intermediate app, `cpms-lambda-pref-redirect`, does on
+`GET /marketo/preferences`:*
+1. Take `ref` from the query string. Reject anything missing, longer than ~200 characters
+   or not shaped `v<n>.<base64url>.<base64url>` before doing any work.
+2. Pick the key for that version (`v1` → current key; during a rotation the previous key is
+   kept too). Unknown version → reject.
+3. AES-256-GCM decrypt with that key, the `iv`, and the additional data `cpms-pref-ref:v<n>`.
+   If the tag doesn't verify, the value was forged or edited → reject.
+4. The plaintext must be a numeric lead ID; otherwise reject.
+5. Marketo *Get Lead by Id*, asking for `email` and `cpmsPrefRef`. No lead → reject. If the
+   lead's stored `cpmsPrefRef` isn't the one presented, the link has been revoked → reject.
+   (Revoking one person's links = issuing them a new `cpmsPrefRef`.)
+6. OneTrust magic link for that email, then redirect.
+
+Every rejection shows the same generic "this link is invalid or has expired" page — never
+which check failed — and is counted, so a run of failures (someone guessing) shows up. Never
+log the `ref`, the lead ID or the email together in plain text.
+
+*The key:*
+- 256-bit, in Secrets Manager as `cpms-secret-pref-ref-key`, holding the current version and
+  any previous ones still accepted. Only the two intermediate-app Lambdas can read it; the
+  apps cache it in memory.
+- **Rotation:** add `v2`, issue new `ref`s with it, re-encrypt every lead's `cpmsPrefRef` in a
+  batch, and keep accepting `v1` until emails sent with it are old enough not to matter
+  (e.g. 12 months), then drop it.
+
+**Stubs in the test app** (`web/`, "Secure portal" and "Email Unsubscribe"):
 - **Stub CRM** — a local JSON file, `web/data/stub-crm.json` (git-ignored: it holds email
   addresses), mapping local ID ↔ email, name, company. Every registration sent from the EMO
   or CL6 page adds its person if new, with the next local ID (`CL6-100235`, …); it starts
-  with one demo user (`dheeraj.saxena@kwantsolutions.co.uk`, `CL6-100234`). Kept out of S3
-  on purpose: it stands in for an external CRM and isn't CPMS data.
+  with one demo user (`dheeraj.saxena@kwantsolutions.co.uk`, `CL6-100234`).
+- **Stub Marketo** — `web/data/stub-marketo.json` (git-ignored): lead ID, email and
+  `cpmsPrefRef`. Every CRM person is also a lead, given the next lead ID (from `1000001`) the
+  first time it's needed, with its `cpmsPrefRef` issued at the same time (standing in for the
+  *Lead is Created* webhook; leads without one get it on load, like the one-off batch).
+- **`ref` key** — `web/data/pref-ref-key.json` (git-ignored, created on first use) stands in
+  for `cpms-secret-pref-ref-key`. The sample email's link carries the real encrypted `ref`, and
+  the click path decrypts it and checks it against the lead's stored value, as described above.
+- **Stub OneTrust link tokens** — one random token per email, valid a year, kept in memory
+  (a restart issues new ones).
+- **Stand-in preference centre** — with no OneTrust tenant connected, the magic link opens a
+  local page (`#/onetrust?token=…`) that shows whose link it is and until when. A real
+  tenant's preference centre URL replaces it.
 - **Sign-in** — simulated: any email in the stub CRM, no password (an unknown email gets
-  "No account found… register first"); an in-memory session cookie. The ownership checks
-  still apply to the signed-in email.
+  "No account found… register first"); an in-memory session cookie.
 
 ## Error handling rules
 
@@ -827,6 +878,10 @@ S3 "components" are `cpms/<store>/` prefixes inside the existing bucket.
 | Collection point token (one per collection point) | `cpms-secret-onetrust-cp-<collection point>`, e.g. `cpms-secret-onetrust-cp-emo` |
 | Receipt signing key | `cpms-kms-onetrust-signing` (alias) |
 | Dispatcher | `cpms-lambda-dispatcher` |
+| Email-link `ref` issuer (Marketo webhook; not built) | `cpms-lambda-pref-ref-issue` |
+| Email-link handler behind `GET /marketo/preferences`: decrypt → Marketo → OneTrust magic link → redirect (not built) | `cpms-lambda-pref-redirect` |
+| Email-link `ref` key | `cpms-secret-pref-ref-key` |
+| Marketo webhook shared secret | `cpms-secret-marketo-webhook` |
 | Taxonomy updater (prod only) | `cpms-lambda-taxonomy-updater` |
 | Taxonomy cache (prod only) | `cpms-elasticache-taxonomy` |
 | VPC (prod only) | `cpms-vpc` |
@@ -895,13 +950,22 @@ networking and extra storage before the flow is proven.
   differs, step 4's mapping changes.
 - **Which purpose `TransactionType` to send for a preference-only receipt** (topics
   changed, purpose consent itself unchanged) — likely `CHANGE_PREFERENCES`; confirm.
-- **Update form (existing users).** Must read the person's current settings from OneTrust
-  before showing the form, then send only the changes. Needs (a) OneTrust API read
-  access — a read path this flow doesn't have; our own S3 records aren't a substitute,
-  since OneTrust is the source of truth and other systems change it too — and (b)
-  authentication of the person (login / magic link — OneTrust link tokens), so nobody
-  can view or change someone else's preferences by typing their email. Likely its own
-  flow folder.
+- ~~Update form (existing users)~~ — **resolved**: no form of ours. Both the secure portal
+  and the email link identify the person and redirect to OneTrust's preference centre via
+  a magic link (see **Updating consent**).
+- ~~The email link carries a bare Marketo lead ID~~ — **decided**: the link carries a
+  pre-encrypted lead ID (`cpmsPrefRef`, AES-256-GCM) that the intermediate app decrypts
+  (see **The email link's `ref`**). Still to settle: the Marketo field name and who creates
+  it; the webhook's shared-secret header and IP allowlist; how long a retired key version
+  keeps being accepted; and whether `ref` should also carry an issue date so very old links
+  can be refused.
+- **Magic link details to confirm with OneTrust:** the preference centre URL and the exact
+  magic-link format; what *Get Data Subject Token* returns for someone who has no token yet
+  (its docs only list 404) — e.g. whether receipts must be sent with the flag that generates
+  an instant link token; token lifetime (the docs mention a year); and whether one token per
+  person is reused or a new one issued per request.
+- **Marketo and CRM API access** — credentials (Marketo REST client ID/secret, CRM API) for
+  the lookups, held server-side only.
 - **Which purposes does an EMO event registration grant?** Assumed `marketing_communications`
   (the page's marketing statement) + `event_communications` (communications about the
   event itself). Confirm, and confirm the **legal basis**: marketing consent that comes
@@ -924,14 +988,14 @@ networking and extra storage before the flow is proven.
   (records the preference only). If ticking "newsletter by email" at sign-up should also
   count as consent to `marketing_communications`, step 4 should send that purpose as `CONFIRMED`
   instead — business/legal decision.
-- ~~Withdrawing a purpose vs its topics~~ — **resolved**: the preference centre no longer
-  exposes purposes directly; "opt out of all marketing" turns every topic off together
-  with the purpose, and turning a topic on re-grants its purpose (see **Preference
-  centre**).
+- ~~Withdrawing a purpose vs its topics~~ — **moot for our pages**: preferences are now
+  changed in OneTrust's preference centre, so how purposes and topics behave there is
+  OneTrust configuration. Step 2 still derives topic opt-outs from a purpose withdrawal for
+  sources that send one.
 - **Should reminders for events someone registered for survive "opt out of all"?** Today the
   full opt-out withdraws `event_communications` too (it covers every purpose). If
   registered-event reminders are service messages that must continue, they need to move
-  out of the preference centre's purposes.
+  out of the preference centre's purposes (now configured in OneTrust).
 - **Receipts sent without `interactionDate`** — OneTrust's docs don't say how those are
   ordered. Moot for CPMS (the schema makes it required) but relevant if anything else
   posts to the same collection point.

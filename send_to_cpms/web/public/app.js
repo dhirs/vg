@@ -1,6 +1,7 @@
 // Two registration flows (event via EMO, new adviser account via CL6), each:
 // two-step form -> source_event preview -> send to CPMS -> what CPMS generated for OneTrust.
-// Plus a preference centre for a signed-in user: sign in -> link with local ID -> CRM -> OneTrust -> edit -> send changes.
+// Plus two ways to update consent, both ending in OneTrust's preference centre via a magic link:
+// secure portal (sign in -> local ID -> CRM -> email) and email link (encrypted lead ID -> decrypt -> Marketo -> email).
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
 const FLOWS = ["event", "account"];
@@ -11,7 +12,6 @@ const state = Object.fromEntries(FLOWS.map((f) => [f, { sent: null, result: null
 let flow = "event";
 let tab = "form";
 let pending = null; // { flow, event } shown in the modal
-let TAX = null;      // taxonomy (purposes, topics, channels) for the preference editor
 
 function highlight(text) {
   return esc(text).replace(/("(\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|-?\d+(\.\d+)?/g, (m, str, _, colon, bool) =>
@@ -22,8 +22,7 @@ const json = (o) => highlight(JSON.stringify(o, null, 2));
 
 // ---------- page content
 async function loadConfig() {
-  const { event, firmSizes, companyTypes, taxonomy } = await (await fetch("/api/config")).json();
-  TAX = taxonomy;
+  const { event, firmSizes, companyTypes } = await (await fetch("/api/config")).json();
   $("ev-title").textContent = event.title;
   $("ev-format").textContent = event.format;
   $("ev-date").textContent = event.date;
@@ -41,9 +40,9 @@ async function loadConfig() {
        <span><b>${esc(c.label)}</b><small>${esc(c.description)}</small></span></label>`).join("");
 }
 
-// ---------- routing: #/event, #/account, #/unsubscribe[?token=…], #/preferences[?localId=…], #/questions/<doc>,
-// #/connectors/<doc>, #/schematics/<id>
-const PAGES = [...FLOWS, "unsubscribe", "preferences", "questions", "connectors", "schematics"];
+// ---------- routing: #/event, #/account, #/unsubscribe[?ref=…], #/preferences[?localId=…], #/onetrust?token=…,
+// #/questions/<doc>, #/connectors/<doc>, #/schematics/<id>
+const PAGES = [...FLOWS, "unsubscribe", "preferences", "onetrust", "questions", "connectors", "schematics"];
 function route() {
   const [path, query = ""] = location.hash.replace(/^#\//, "").split("?");
   const [page, doc] = path.split("/");
@@ -60,7 +59,8 @@ function route() {
   if (flow === "schematics") return openSchematic(doc);
   const params = new URLSearchParams(query);
   if (flow === "preferences") return preferenceCentre({ mode: "portal", localId: params.get("localId") });
-  if (flow === "unsubscribe") return preferenceCentre({ mode: "unsubscribe", token: params.get("token") });
+  if (flow === "unsubscribe") return preferenceCentre({ mode: "unsubscribe", ref: params.get("ref") });
+  if (flow === "onetrust") return oneTrustStandIn(params.get("token"));
   $("tab-form").textContent = flow === "event" ? "Register" : "Create account";
   showTab(tab);
 }
@@ -168,12 +168,10 @@ $("send").addEventListener("click", async () => {
   $("send").disabled = true;
   setStatus("Sending…");
   try {
-    const headers = { "Content-Type": "application/json", ...(f === "update" ? pc.headers : {}) };
-    const res = await fetch("/api/send", { method: "POST", headers, body: JSON.stringify({ event, profile }) });
+    const res = await fetch("/api/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event, profile }) });
     const data = await res.json();
     if (res.ok) {
       closeModal(); setStatus(""); $("send").disabled = false;
-      if (f === "update") return onUpdateSent(event);
       Object.assign(state[f], { sent: { event, ...data }, result: null, status: "processing", error: null });
       showTab("sent");
       pollResult(f, event.eventId);
@@ -275,27 +273,34 @@ async function waitForResult(eventId, timeoutMs = 90_000) {
   throw new Error("No result after 90 seconds. Check the cpms-lambda-fifo-consumer logs and the ingestion DLQ.");
 }
 
-// ---------- preference centre: secure portal (signed in) and email unsubscribe link (signed token)
-// Same steps from the CRM lookup on; only how the person is identified differs.
-const SHARED_STEPS = [
-  { key: "crm", title: "CRM lookup", hint: "local ID → email" },
-  { key: "onetrust", title: "OneTrust lookup", hint: "email → preferences" },
-  { key: "show", title: "Your settings", hint: "review & change" },
-  { key: "save", title: "Changes saved", hint: "sent to CPMS" },
+// ---------- updating consent: secure portal (signed in) and email link (pre-encrypted lead ID)
+// Neither page shows or edits settings: both work out who the person is, ask OneTrust for that
+// person's magic link, and redirect to OneTrust's preference centre, where the change is made
+// and recorded by OneTrust itself.
+const MAGIC_STEPS = [
+  { key: "magic", title: "OneTrust magic link", hint: "email → link token" },
+  { key: "redirect", title: "Redirect", hint: "to OneTrust's preference centre" },
 ];
 const STEPS = {
   portal: [
     { key: "signin", title: "Signed in", hint: "Vanguard 365 session" },
     { key: "link", title: "Preference link", hint: "carries your local ID" },
-    ...SHARED_STEPS,
+    { key: "crm", title: "CRM lookup", hint: "local ID → email" },
+    ...MAGIC_STEPS,
   ],
   unsubscribe: [
-    { key: "email", title: "Marketing email", hint: "with an unsubscribe link" },
-    { key: "link", title: "Unsubscribe link", hint: "signed token · no sign-in" },
-    ...SHARED_STEPS,
+    { key: "email", title: "Marketing email", hint: "sent by Marketo" },
+    { key: "link", title: "Preferences link", hint: "carries the encrypted lead ID" },
+    { key: "decrypt", title: "Decrypt", hint: "ref → lead ID" },
+    { key: "marketo", title: "Marketo lookup", hint: "lead ID → email" },
+    ...MAGIC_STEPS,
   ],
 };
-const pc = { run: 0, mode: "portal", headers: {}, status: {}, details: {}, subject: null, prefs: null, current: null, draft: null, banner: "", mailTo: null };
+const REDIRECT_DELAY_MS = 4000; // long enough to see what happened before the page moves on
+// One endpoint per way in: the path says where the request came from, so no "source" parameter.
+const MARKETO_ENDPOINT = "/api/marketo/preferences"; // the email link (a Marketo pre-encrypted lead ID)
+const WEBSITE_ENDPOINT = "/api/website/preferences"; // the signed-in Vanguard 365 user
+const pc = { run: 0, mode: "portal", status: {}, details: {}, mailTo: null };
 
 function setProgress() {
   $("progress").innerHTML = STEPS[pc.mode].map((step, i) => {
@@ -312,30 +317,39 @@ const API = async (url, opts) => {
   if (!res.ok) throw new Error((data.errors || ["request failed"]).join("; "));
   return data;
 };
+const waiting = (text) => `<div class="callout warn"><span class="spinner"></span>${esc(text)}</div>`;
 
-async function preferenceCentre({ mode, localId, token }) {
+async function preferenceCentre({ mode, localId, ref }) {
   const run = ++pc.run;
   const live = () => run === pc.run;
-  Object.assign(pc, { mode, headers: token ? { "X-Unsubscribe-Token": token } : {}, status: {}, details: {}, subject: null, prefs: null, banner: "" });
+  Object.assign(pc, { mode, status: {}, details: {} });
   const step = (key, st, detail) => { pc.status[key] = st; if (detail) pc.details[key] = detail; if (live()) setProgress(); };
   const body = (html) => { if (live()) $("pc-body").innerHTML = html; };
   const fail = (key, err) => { step(key, "error", err.message); body(`<div class="callout err">${esc(err.message)}</div>`); };
+  const ctx = { step, body, fail, live };
   $("signout").hidden = true;
+  setProgress();
 
   if (mode === "unsubscribe") {
-    // 1. the marketing email; 2. its unsubscribe link -> whose link it is (checked by the server)
-    if (!token) {
+    // 1. the Marketo email; 2. its link with the encrypted lead ID; 3. decrypt; 4. Marketo: lead ID -> email
+    if (!ref) {
       step("email", "active", "click the link in the email");
       try { return body(await emailHtml()); } catch (err) { return fail("email", err); }
     }
     step("email", "done", "link clicked");
-    step("link", "active", "checking link…");
-    let link;
-    try { link = await API("/api/unsubscribe/link", { headers: pc.headers }); } catch (err) { return fail("link", err); }
+    step("link", "done", `ref ${ref.slice(0, 14)}…`);
+    step("decrypt", "active", "checking the link…");
+    body(waiting("Checking your link…"));
+    let opened, lead;
+    try { opened = await API(`${MARKETO_ENDPOINT}/decrypt?ref=${encodeURIComponent(ref)}`); } catch (err) { return fail("decrypt", err); }
     if (!live()) return;
-    localId = link.localId;
-    step("link", "done", `localId ${localId} · valid until ${new Date(link.expiresAt).toLocaleDateString()}`);
-    return lookUpAndShow(localId, { step, body, fail, live });
+    step("decrypt", "done", `leadId ${opened.leadId} · key ${opened.version}`);
+    step("marketo", "active", "asking Marketo…");
+    body(waiting("Looking you up in Marketo…"));
+    try { lead = await API(`${MARKETO_ENDPOINT}/lead?ref=${encodeURIComponent(ref)}`); } catch (err) { return fail("marketo", err); }
+    if (!live()) return;
+    step("marketo", "done", lead.email);
+    return magicLinkAndRedirect(`${MARKETO_ENDPOINT}/magiclink?ref=${encodeURIComponent(ref)}`, { request: `${opened.request}  →  ${lead.request}` }, ctx);
   }
 
   // 1. signed in?
@@ -360,71 +374,65 @@ async function preferenceCentre({ mode, localId, token }) {
         <span>Manage my preferences<small>…/preferences?localId=${esc(session.user.localId)}</small></span></a>`);
   }
   step("link", "done", `localId ${localId}`);
-  return lookUpAndShow(localId, { step, body, fail, live });
-}
 
-async function lookUpAndShow(localId, { step, body, fail, live }) {
   // 3. CRM: local ID -> email
   step("crm", "active", "asking CRM…");
-  body(`<div class="callout warn"><span class="spinner"></span>Looking you up…</div>`);
-  try { pc.subject = await API(`/api/crm/subject?localId=${encodeURIComponent(localId)}`, { headers: pc.headers }); } catch (err) { return fail("crm", err); }
-  step("crm", "done", pc.subject.email);
-
-  // 4. OneTrust: email -> preferences (stand-in: CPMS records)
-  step("onetrust", "active", "fetching preferences…");
-  try { await loadPrefs(); } catch (err) { return fail("onetrust", err); }
+  body(waiting("Looking you up…"));
+  let subject;
+  try { subject = await API(`${WEBSITE_ENDPOINT}/subject?localId=${encodeURIComponent(localId)}`); } catch (err) { return fail("crm", err); }
   if (!live()) return;
-  step("onetrust", "done", `${pc.prefs.purposes.length + pc.prefs.preferences.length} settings · stand-in`);
-
-  // 5. editable settings
-  step("show", "active", "review & change");
-  renderEditor();
+  step("crm", "done", subject.email);
+  return magicLinkAndRedirect(`${WEBSITE_ENDPOINT}/magiclink?localId=${encodeURIComponent(localId)}`, subject, ctx);
 }
 
-// Current settings as the page shows them: each purpose's consent, and topic × channel on/off.
-// A topic × channel with no explicit choice yet takes its value from the topic's purpose: a
-// registration's "you will also receive marketing communications" means email is on for every
-// topic under a granted purpose; SMS and push stay off until chosen. (Assumption — design.md.)
-async function loadPrefs() {
-  pc.prefs = await API(`/api/onetrust/preferences?email=${encodeURIComponent(pc.subject.email)}`, { headers: pc.headers });
-  const on = (st) => st === "granted" || st === "opt_in";
-  const purposes = Object.fromEntries(TAX.purposes.map((p) => [p.code, false]));
-  for (const p of pc.prefs.purposes) purposes[p.purposeCode] = on(p.status);
-  const explicit = Object.fromEntries(pc.prefs.preferences.map((p) => [`${p.topicCode}|${p.channel}`, on(p.status)]));
-  const prefs = {};
-  for (const t of TAX.topics) for (const c of TAX.channels) {
-    const key = `${t.code}|${c}`;
-    prefs[key] = purposes[t.purposeCode] && (key in explicit ? explicit[key] : c === "email");
-  }
-  const anyOn = Object.values(purposes).some(Boolean) || Object.values(prefs).some(Boolean);
-  pc.current = { purposes, prefs, optOutAll: !anyOn };
-  pc.draft = { purposes: { ...purposes }, prefs: { ...prefs }, optOutAll: !anyOn };
+// 4. OneTrust: email -> link token -> magic link; 5. redirect to OneTrust's preference centre.
+async function magicLinkAndRedirect(magicLinkUrl, lookup, { step, body, fail, live }) {
+  step("magic", "active", "asking OneTrust…");
+  body(waiting("Getting your preference centre link from OneTrust…"));
+  let link;
+  try { link = await API(magicLinkUrl); } catch (err) { return fail("magic", err); }
+  if (!live()) return;
+  step("magic", "done", `valid until ${new Date(link.expiryDate).toLocaleDateString()}`);
+  step("redirect", "active", "redirecting…");
+  body(`
+    <div class="callout ok">Taking you to OneTrust's preference centre for <b>${esc(link.email)}</b>…</div>
+    <ol class="calls">
+      <li><span>Look up the email</span><code>${esc(lookup.request)}</code></li>
+      <li><span>Get the magic link token</span><code>${esc(link.request)}</code></li>
+      <li><span>Redirect</span><code>${esc(link.url)}</code></li>
+    </ol>
+    <div class="actions"><span class="hint">${link.standIn ? "No OneTrust tenant yet — the link opens a local stand-in for its preference centre." : ""}</span>
+      <a class="btn primary" href="${esc(link.url)}">Go now</a></div>`);
+  setTimeout(() => {
+    if (!live()) return;
+    step("redirect", "done", "opened OneTrust");
+    location.href = link.url;
+  }, REDIRECT_DELAY_MS);
 }
 
 function signInForm(demo) {
   return `
     <h3 class="pc-title">Sign in to Vanguard 365</h3>
-    <p class="lead">You need to be signed in to see and change your preferences.</p>
+    <p class="lead">You need to be signed in to manage your preferences.</p>
     <form id="signin" class="signin" novalidate>
       <label class="field"><span class="label">Email address</span><input name="email" type="email" autocomplete="username" value="${esc(demo.email)}"><span class="error"></span></label>
       <div class="actions"><span class="hint">Simulated sign-in: any email you've registered with.</span><button class="btn primary" type="submit">Sign in</button></div>
     </form>`;
 }
 
-// A marketing email as the email platform (SFMC) would send it; its footer links carry a
-// signed token for the recipient, so the settings open without signing in.
+// A marketing email as Marketo sends it: the link carries the lead's pre-encrypted lead ID ({{lead.cpmsPrefRef}}).
 async function emailHtml() {
   const { recipients } = await API("/api/email/recipients");
-  if (!recipients.some((r) => r.localId === pc.mailTo)) pc.mailTo = recipients[0]?.localId;
+  if (!recipients.some((r) => String(r.leadId) === String(pc.mailTo))) pc.mailTo = recipients[0]?.leadId;
   if (!pc.mailTo) return `<p class="empty">No one to email yet — register on the event or account page first.</p>`;
-  const mail = await API(`/api/email/message?localId=${encodeURIComponent(pc.mailTo)}`);
-  const link = `#/unsubscribe?token=${encodeURIComponent(mail.token)}`;
+  const mail = await API(`/api/email/message?leadId=${encodeURIComponent(pc.mailTo)}`);
+  const link = `#/unsubscribe?ref=${encodeURIComponent(mail.ref)}`;
   return `
     <h3 class="pc-title">Inbox</h3>
-    <p class="lead">A marketing email with a preferences link. Pick who received it, then click <b>Manage your preferences</b>.</p>
+    <p class="lead">A marketing email sent by Marketo. Pick who received it, then click <b>Manage your preferences</b>.</p>
     <label class="field mail-to"><span class="label">Recipient</span>
       <select id="mail-to">${recipients.map((r) =>
-        `<option value="${esc(r.localId)}"${r.localId === pc.mailTo ? " selected" : ""}>${esc(r.name)} · ${esc(r.email)}</option>`).join("")}</select></label>
+        `<option value="${esc(r.leadId)}"${String(r.leadId) === String(pc.mailTo) ? " selected" : ""}>${esc(r.name)} · ${esc(r.email)}</option>`).join("")}</select></label>
     <article class="mail">
       <header class="mail-head">
         <div><b>From</b>${esc(mail.from)}</div>
@@ -437,7 +445,8 @@ async function emailHtml() {
         <p>Our investment strategy team has summarised what changed, what didn't, and the questions advisers are asking most. Join the briefing on 29 October for the full picture.</p>
       </div>
       <footer class="mail-foot">You're receiving this email because you registered with Vanguard.
-        <a href="${link}">Manage your preferences</a></footer>
+        <a href="${link}">Manage your preferences</a>
+        <span class="mail-link">https://&lt;cpms-host&gt;/marketo/preferences?ref={{lead.cpmsPrefRef}} → ref ${esc(mail.ref)}</span></footer>
     </article>`;
 }
 
@@ -461,208 +470,22 @@ document.addEventListener("submit", async (e) => {
 });
 $("signout").addEventListener("click", async () => { await API("/api/logout", { method: "POST" }); location.hash = "#/preferences"; route(); });
 
-
-const purposeOf = (code) => TAX.purposes.find((p) => p.code === code);
-const topicsOf = (purposeCode) => TAX.topics.filter((t) => t.purposeCode === purposeCode);
-const keysOf = (topicCode) => TAX.channels.map((c) => `${topicCode}|${c}`);
-const purposeKeys = (purposeCode) => topicsOf(purposeCode).flatMap((t) => keysOf(t.code));
-
-// A purpose with topics is on exactly when at least one of its topic × channels is on:
-// deselecting the last one turns the purpose off; switching a purpose on with nothing
-// selected turns email on for its topics (the same default as a registration).
-function syncPurpose(purposeCode) {
-  const keys = purposeKeys(purposeCode);
-  if (!keys.length) return;
-  const anyOn = keys.some((k) => pc.draft.prefs[k]);
-  if (pc.draft.purposes[purposeCode] && !anyOn) {
-    if (pc.draft.justSwitchedOn === purposeCode) keys.filter((k) => k.endsWith("|email")).forEach((k) => { pc.draft.prefs[k] = true; });
-    else pc.draft.purposes[purposeCode] = false;
-  }
-  delete pc.draft.justSwitchedOn;
-  syncOptOut();
-}
-
-// Enabling anything while opted out leaves the opt-out: start from everything off, then the
-// caller switches on just what was enabled.
-function leaveOptOut() {
-  if (!pc.draft.optOutAll) return;
-  pc.draft.optOutAll = false;
-  for (const p of TAX.purposes) pc.draft.purposes[p.code] = false;
-  for (const k of Object.keys(pc.draft.prefs)) pc.draft.prefs[k] = false;
-}
-
-// No purpose left on = opted out of everything: the full opt-out switches itself on.
-function syncOptOut() {
-  if (TAX.purposes.every((p) => !pc.draft.purposes[p.code])) pc.draft.optOutAll = true;
-}
-
-// Effective draft values: the full opt-out overrides every purpose, and a topic × channel is
-// only on while its purpose is on.
-const draftPurpose = (code) => !pc.draft.optOutAll && pc.draft.purposes[code];
-const draftPref = (key) => {
-  const topic = TAX.topics.find((t) => t.code === key.split("|")[0]);
-  return !pc.draft.optOutAll && draftPurpose(topic.purposeCode) && pc.draft.prefs[key];
-};
-
-// Only what differs from what was loaded is sent — an explicit "off" for anything switched off.
-// A purpose switched off is sent as just the withdrawal: CPMS (step 2) derives opt_out for every
-// topic × channel under it, so the source never has to spell that out. The full opt-out sends
-// every purpose withdrawn (even ones that look off — the page shows CPMS's view, not OneTrust's).
-function changes() {
-  const fullOptOut = pc.draft.optOutAll && !pc.current.optOutAll;
-  const consent = TAX.purposes.filter((p) => fullOptOut || draftPurpose(p.code) !== pc.current.purposes[p.code])
-    .map((p) => ({ purpose: p.code, status: draftPurpose(p.code) ? "granted" : "withdrawn" }));
-  const preferences = [];
-  for (const t of TAX.topics) {
-    if (!draftPurpose(t.purposeCode)) continue; // covered by the purpose withdrawal (or already off)
-    for (const key of keysOf(t.code)) {
-      if (draftPref(key) !== pc.current.prefs[key]) {
-        const [topic, channel] = key.split("|");
-        preferences.push({ topic, channel, status: draftPref(key) ? "opt_in" : "opt_out" });
-      }
-    }
-  }
-  return { consent, preferences, count: consent.length + preferences.length };
-}
-
-const nameOf = (code) => code.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase()); // marketing_communications -> Marketing communications
-
-function renderEditor() {
-  const s = pc.subject, p = pc.prefs;
-  const sections = TAX.purposes.map((tp) => {
-    const isOn = draftPurpose(tp.code);
-    const purposeChanged = isOn !== pc.current.purposes[tp.code];
-    const topics = topicsOf(tp.code).map((t) => {
-      const changed = keysOf(t.code).some((k) => draftPref(k) !== pc.current.prefs[k]);
-      return `<li class="topic-row ${changed ? "changed" : ""} ${isOn ? "" : "muted-row"}">
-        <div><b>${esc(nameOf(t.code))}</b></div>
-        <div class="chan">${TAX.channels.map((c) => {
-          const on = draftPref(`${t.code}|${c}`);
-          return `<button type="button" class="chan-toggle ${on ? "on" : ""}" data-kind="pref" data-key="${esc(t.code)}|${esc(c)}" aria-pressed="${on}">${esc(c)}</button>`;
-        }).join("")}</div>
-      </li>`;
-    }).join("");
-    return `<section class="purpose ${isOn ? "on" : ""} ${purposeChanged ? "changed" : ""}">
-      <header class="purpose-head">
-        <div><b>${esc(nameOf(tp.code))}</b></div>
-        <label class="switch"><input type="checkbox" data-kind="purpose" data-key="${esc(tp.code)}" ${isOn ? "checked" : ""}><span></span></label>
-      </header>
-      ${topics ? `<div class="topics-label">Topics</div><ul class="topic-list">${topics}</ul>` : ""}
-    </section>`;
-  }).join("");
-  const optChanged = pc.draft.optOutAll !== pc.current.optOutAll;
-  const n = changes().count;
-  $("pc-body").innerHTML = `
-    ${pc.banner}
-    <div class="pc-head">
-      <div><h3 class="pc-title">${esc(s.email)}</h3><p class="meta-line"><span>${esc(s.company)}</span><span>local ID <code>${esc(s.localId)}</code></span></p></div>
-    </div>
-    <h4 class="pc-section">Your current settings</h4>
-    <p class="muted pc-help">Each purpose is what you've agreed to; its topics are what you hear about, and on which channels.</p>
-    ${sections}
-    <div class="optout ${pc.draft.optOutAll ? "active" : ""} ${optChanged ? "changed" : ""}">
-      <div><b>Opt out of all marketing contact</b>
-        <small>Stops all emails, texts and notifications from us about everything above.</small></div>
-      <label class="switch danger"><input type="checkbox" id="pc-optout" ${pc.draft.optOutAll ? "checked" : ""}><span></span></label>
-    </div>
-    <p class="source-note">Loaded from ${esc(p.source)} — what CPMS last sent to OneTrust for you.</p>
-    <div class="save-bar">
-      <span class="hint">${n ? `<b>${n}</b> unsaved change${n === 1 ? "" : "s"} will be sent.` : "No changes yet."}</span>
-      <button class="btn ghost" type="button" id="pc-reset" ${n || optChanged ? "" : "disabled"}>Undo changes</button>
-      <button class="btn primary" type="button" id="pc-save" ${n ? "" : "disabled"}>Save changes</button>
-    </div>`;
-}
-
-document.addEventListener("change", (e) => {
-  if (e.target.id === "pc-optout") {
-    pc.draft.optOutAll = e.target.checked;
-    if (!pc.draft.optOutAll) {
-      if (!pc.current.optOutAll) {
-        // back to what was loaded
-        pc.draft = { purposes: { ...pc.current.purposes }, prefs: { ...pc.current.prefs }, optOutAll: false };
-      } else {
-        // was opted out when loaded: every purpose on, with email for their topics
-        for (const p of TAX.purposes) { pc.draft.purposes[p.code] = true; pc.draft.justSwitchedOn = p.code; syncPurpose(p.code); }
-      }
-    }
-    return renderEditor();
-  }
-  const sw = e.target.closest('input[data-kind="purpose"]');
-  if (sw) {
-    if (sw.checked) leaveOptOut(); // enabling any purpose turns the full opt-out off
-    pc.draft.purposes[sw.dataset.key] = sw.checked;
-    if (!sw.checked) syncOptOut();
-    if (sw.checked) {
-      pc.draft.justSwitchedOn = sw.dataset.key;
-      syncPurpose(sw.dataset.key);
-    }
-    renderEditor();
-  }
-});
-document.addEventListener("click", async (e) => {
-  const chip = e.target.closest('button[data-kind="pref"]');
-  if (chip) {
-    const key = chip.dataset.key;
-    const parent = TAX.topics.find((t) => t.code === key.split("|")[0]).purposeCode;
-    if (!draftPref(key) && (pc.draft.optOutAll || !draftPurpose(parent))) {
-      // choosing a channel under an off purpose / while opted out = "opt back in, to this"
-      leaveOptOut();
-      pc.draft.purposes[parent] = true;
-      for (const k of TAX.topics.filter((t) => t.purposeCode === parent).flatMap((t) => keysOf(t.code))) pc.draft.prefs[k] = false;
-      pc.draft.prefs[key] = true;
-    } else {
-      pc.draft.prefs[key] = !pc.draft.prefs[key];
-      syncPurpose(parent); // deselecting the purpose's last topic × channel turns the purpose off
-    }
-    return renderEditor();
-  }
-  if (e.target.id === "pc-reset") {
-    pc.draft = { purposes: { ...pc.current.purposes }, prefs: { ...pc.current.prefs }, optOutAll: pc.current.optOutAll };
-    return renderEditor();
-  }
-  if (e.target.id === "pc-save") {
-    const { consent, preferences } = changes();
-    try {
-      const data = await fetch("/api/preview", { method: "POST", headers: { "Content-Type": "application/json", ...pc.headers },
-        body: JSON.stringify({ flow: "update", changes: { consent, preferences } }) }).then((r) => r.json());
-      pending = { flow: "update", event: data.event };
-      $("modal-title").textContent = "Changes CL6 will send to CPMS";
-      $("meta").textContent = data.entry ? `bus: ${data.entry.EventBusName} · source: ${data.entry.Source} · detail-type: ${data.entry.DetailType}` : "";
-      $("payload").innerHTML = json(data.event);
-      $("send").disabled = data.errors.length > 0;
-      setStatus(data.errors.length ? `Can't send:\n${data.errors.join("\n")}` : "", data.errors.length ? "err" : "");
-      openModal();
-    } catch (err) {
-      pc.banner = `<div class="callout err">${esc(err.message)}</div>`;
-      renderEditor();
-    }
-  }
-});
-
-async function onUpdateSent(event) {
-  const run = pc.run;
-  const step = (key, st, detail) => { pc.status[key] = st; if (detail) pc.details[key] = detail; if (run === pc.run) setProgress(); };
-  step("show", "done", `${changes().count} change(s) sent`);
-  step("save", "active", "CPMS processing…");
-  pc.banner = `<div class="callout warn"><span class="spinner"></span>Saving — CPMS is processing your changes…</div>`;
-  renderEditor();
+// ---------- stand-in for OneTrust's hosted preference centre (where the magic link lands)
+async function oneTrustStandIn(token) {
+  $("otpc-body").innerHTML = `<p class="empty">Opening…</p>`;
   try {
-    const r = await waitForResult(event.eventId);
-    if (run !== pc.run) return;
-    const details = `<details class="result-details"><summary>What CPMS sent to OneTrust</summary>${resultHtml(r)}</details>`;
-    if (r.outcome === "rejected") {
-      step("save", "error", `rejected at ${r.failedStep}`);
-      pc.banner = `<div class="callout err">Your changes weren't saved — CPMS rejected them at <b>${esc(r.failedStep)}</b>.</div>${details}`;
-      return renderEditor(); // keep the draft so nothing is lost
-    }
-    step("save", "done", r.outcome === "sent" ? `${r.requests.length} OneTrust request(s)` : "nothing new to send");
-    await loadPrefs(); // reload so the page shows the new current state
-    pc.banner = `<div class="callout ok">Your preferences have been saved.</div>${details}`;
-    renderEditor();
+    const { email, expiryDate } = await API(`/api/onetrust/preference-centre?token=${encodeURIComponent(token || "")}`);
+    $("otpc-body").innerHTML = `
+      <div class="callout info">Stand-in: in production this is <b>OneTrust's hosted preference centre</b>. The person reviews and
+        changes their preferences here; OneTrust records the change itself, and the consent fanout
+        (OneTrust → SFMC, OneTrust → AEP) takes it from there.</div>
+      <dl class="otpc-facts">
+        <dt>Opened for</dt><dd>${esc(email)}</dd>
+        <dt>Link token</dt><dd><code>${esc(token)}</code></dd>
+        <dt>Valid until</dt><dd>${esc(new Date(expiryDate).toLocaleString())}</dd>
+      </dl>`;
   } catch (err) {
-    step("save", "error", "no result");
-    pc.banner = `<div class="callout err">${esc(err.message)}</div>`;
-    renderEditor();
+    $("otpc-body").innerHTML = `<div class="callout err">${esc(err.message)}</div>`;
   }
 }
 

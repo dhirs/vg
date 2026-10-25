@@ -39,11 +39,11 @@
         <summary class="side-label">Logged in flows<small>Update Consent</small></summary>
         <a href="#/preferences" class="side-link" data-flow="preferences">
           <svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
-          <span>Secure portal<small>Signed-in user · current settings</small></span>
+          <span>Secure portal<small>Signed in · CRM → OneTrust magic link</small></span>
         </a>
         <a href="#/unsubscribe" class="side-link" data-flow="unsubscribe">
           <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
-          <span>Email Unsubscribe<small>Marketing email · unsubscribe link</small></span>
+          <span>Email Unsubscribe<small>Marketo email · encrypted ref → magic link</small></span>
         </a>
       </details>
       <details class="side-group">
@@ -101,7 +101,7 @@
       <div class="hero-inner">
         <span class="eyebrow">Vanguard 365</span>
         <h1>Your communication preferences</h1>
-        <p class="hero-lead">See how we currently contact you and what you've agreed to.</p>
+        <p class="hero-lead">Manage what you receive from us — your preferences open in OneTrust's preference centre.</p>
       </div>
     </section>
 
@@ -110,7 +110,16 @@
       <div class="hero-inner">
         <span class="eyebrow">Email unsubscribe</span>
         <h1>Unsubscribe or change what you receive</h1>
-        <p class="hero-lead">The unsubscribe link in a marketing email opens your settings directly — no sign-in needed.</p>
+        <p class="hero-lead">The link in a Marketo email carries your encrypted lead ID: we decrypt it, find your email in Marketo and open your preferences in OneTrust.</p>
+      </div>
+    </section>
+
+    <!-- OneTrust preference centre (stand-in) header -->
+    <section class="hero" data-flow="onetrust" hidden>
+      <div class="hero-inner">
+        <span class="eyebrow">OneTrust · stand-in</span>
+        <h1>OneTrust preference centre</h1>
+        <p class="hero-lead">Where the magic link lands. OneTrust's hosted page replaces this once a tenant is connected.</p>
       </div>
     </section>
 
@@ -150,11 +159,14 @@
       <!-- ===== OneTrust Connectors (consent_fanout/connectors/<doc>.md) ===== -->
       <div data-flow="connectors" hidden><div class="card md doc" id="c-body"></div></div>
 
-      <!-- ===== Preference centre: secure portal (signed-in user) and email unsubscribe link ===== -->
+      <!-- ===== OneTrust preference centre stand-in (magic link target) ===== -->
+      <div data-flow="onetrust" hidden><div class="card" id="otpc-body"></div></div>
+
+      <!-- ===== Updating consent: secure portal (signed in) and email link (Marketo lead ID) ===== -->
       <div data-flow="preferences unsubscribe" hidden>
         <div class="card progress-card">
           <div class="progress-head">
-            <h2>Loading your preferences</h2>
+            <h2>Opening your preferences</h2>
             <button class="btn ghost small" id="signout" type="button" hidden>Sign out</button>
           </div>
           <ol class="progress" id="progress"></ol>

@@ -60,7 +60,7 @@ lives at root.
   enforcement can't drift apart.
 
 - **`diagrams/`** — `.drawio` architecture diagrams for that flow (e.g.
-  `Send_To_OneTrust.drawio` in `send_to_cpms/`), editable in draw.io/diagrams.net. Visual
+  `New_Consent_Record.drawio` in `send_to_cpms/`), editable in draw.io/diagrams.net. Visual
   companion to `design.md`, not a replacement — rationale still lives in the doc.
 
 - **`README.md`** (root) — placeholder, not yet written up.
@@ -99,8 +99,10 @@ lives at root.
 
 ## Running the test app (`send_to_cpms/web/`)
 
-Local Node.js app with three flows in a left sidebar: **Event registration** (EMO),
-**Account registration** (CL6 / Vanguard 365) and **Preference centre** (signed-in user).
+Local Node.js app. Left sidebar: **Non-logged in flows** (new consent record — **Event
+registration** via EMO, **Account registration** via CL6 / Vanguard 365) and **Logged in
+flows** (update consent — **Secure portal** and **Email Unsubscribe**, both of which find the
+person's email and redirect to OneTrust's preference centre via a magic link).
 Below them, **Open questions** shows each `consent_fanout/<doc>.md` (so far `SFMC` and `AEP`) question
 by question, read live from the file, with comments saved to
 `consent_fanout/comments/<doc>.json`. To add a file, add its name to `QUESTION_DOCS` in
@@ -129,7 +131,10 @@ deployed and run on their own. Re-run the deploy scripts only after changing the
 - `python3 send_to_cpms/deploy/setup_ingestion.py` — after editing the bus / rule / ingestion queue
 
 **Using it:** register on the EMO or CL6 page (any email) → that person is added to the
-stub CRM (`send_to_cpms/web/data/stub-crm.json`, git-ignored) → sign in to the
-Preference centre with the same email (no password) to view and change their settings.
-After a server change, restart with the script; after a page change, a hard refresh
-(Cmd+Shift+R) is enough.
+stub CRM (`send_to_cpms/web/data/stub-crm.json`) and stub Marketo
+(`send_to_cpms/web/data/stub-marketo.json`), both git-ignored. Then either sign in to the
+**Secure portal** with the same email (no password) and click your preferences link, or open
+**Email Unsubscribe**, pick the person and click the link in the sample Marketo email. Both
+look up the email (CRM / Marketo), get a OneTrust magic link and redirect to a local stand-in
+for OneTrust's preference centre. After a server change, restart with the script; after a
+page change, a hard refresh (Cmd+Shift+R) is enough.

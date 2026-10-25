@@ -9,17 +9,20 @@
 //
 // The browser never sees AWS credentials — they're read here from the repo-root .env.prod.
 //
-// Third flow — preference centre for a signed-in user: sign in (simulated) -> link carrying
-// the user's local ID -> CRM looks up the email (stub) -> OneTrust returns the subject's
-// preferences (stand-in: rebuilt from CPMS's own S3 records, since there's no OneTrust
-// connectivity yet) -> shown as editable settings -> only the *changes* are sent to CPMS as a
-// preference_update from CL6.
+// Updating consent — neither page shows or edits settings; both identify the person, ask OneTrust
+// for that person's magic link, and redirect to OneTrust's preference centre, where the change is
+// made and recorded by OneTrust:
+// - secure portal: sign in (simulated) -> link carrying the local ID -> CRM: local ID -> email
+// - email link: Marketo email whose link carries the pre-encrypted lead ID (ref) -> decrypt ->
+//   Marketo: lead ID -> email (and the lead's stored ref must match)
+// then OneTrust: email -> link token -> magic link -> redirect. Marketo, the CRM and OneTrust are
+// stubs (no API access yet); the redirect opens a local stand-in for OneTrust's preference centre.
 //
-// Also: "Open questions" pages — each consent_fanout/<doc>.md (e.g. SFMC.md) rendered question
-// by question, with comments saved to consent_fanout/comments/<doc>.json.
+// Also: "Open questions", "OneTrust Connectors" and "Schematics" reference pages, read live from
+// consent_fanout/ and each flow's diagrams/.
 //
 // Usage: cd send_to_cpms/web && npm install && npm start   ->   http://localhost:8600
-import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,9 +64,6 @@ const FLOWS = {
 
 // Preference centre edits: an existing person changing settings. Unlike a registration, a
 // change *off* must be sent explicitly (withdrawn / opt_out) — otherwise the old "on" stands.
-const UPDATE_FLOW = { sourceSystem: "cl6", eventType: "preference_update", captureMethod: "preference_centre" };
-const CONSENT_STATUSES = ["granted", "withdrawn"];
-const PREFERENCE_STATUSES = ["opt_in", "opt_out"];
 
 // Page content (shown on the pages; not part of the source_event).
 const EVENT = {
@@ -114,36 +114,99 @@ const crm = {
 };
 const sessions = new Map(); // session id -> { localId }
 
-// Email unsubscribe link: a signed, expiring token for one local ID instead of a session —
-// unsubscribing mustn't require signing in, and a bare local ID could be edited to reach
-// someone else's settings. The secret lives in data/ (git-ignored) so links survive a restart.
-const UNSUBSCRIBE_SECRET_FILE = join(HERE, "data", "unsubscribe-secret");
-const UNSUBSCRIBE_TTL_MS = 30 * 24 * 3600 * 1000;
-function unsubscribeSecret() {
-  if (!existsSync(UNSUBSCRIBE_SECRET_FILE)) {
-    mkdirSync(dirname(UNSUBSCRIBE_SECRET_FILE), { recursive: true });
-    writeFileSync(UNSUBSCRIBE_SECRET_FILE, randomBytes(32).toString("hex"));
+// Email-link `ref`: the lead ID pre-encrypted with AES-256-GCM, stored on the Marketo lead as
+// cpmsPrefRef and printed into the email link (design.md -> "The email link's ref").
+// Format v<n>.<iv>.<ciphertext+tag>, base64url; additional data "cpms-pref-ref:v<n>" binds it
+// to this purpose. The key file stands in for Secrets Manager cpms-secret-pref-ref-key
+// (git-ignored, created on first use).
+const REF_KEY_FILE = join(HERE, "data", "pref-ref-key.json");
+const REF_VERSION = "v1";
+function refKeys() {
+  if (!existsSync(REF_KEY_FILE)) {
+    mkdirSync(dirname(REF_KEY_FILE), { recursive: true });
+    writeFileSync(REF_KEY_FILE, JSON.stringify({ [REF_VERSION]: randomBytes(32).toString("base64") }, null, 2));
   }
-  return readFileSync(UNSUBSCRIBE_SECRET_FILE, "utf8").trim();
+  return Object.fromEntries(Object.entries(JSON.parse(readFileSync(REF_KEY_FILE, "utf8"))).map(([v, k]) => [v, Buffer.from(k, "base64")]));
 }
-const signPayload = (payload) => createHmac("sha256", unsubscribeSecret()).update(payload).digest("base64url");
-function unsubscribeToken(localId) {
-  const payload = Buffer.from(JSON.stringify({ localId, exp: Date.now() + UNSUBSCRIBE_TTL_MS })).toString("base64url");
-  return `${payload}.${signPayload(payload)}`;
+const refAad = (version) => Buffer.from(`cpms-pref-ref:${version}`);
+function encryptRef(leadId) {
+  const iv = randomBytes(12); // new for every encryption — never reused with the same key
+  const cipher = createCipheriv("aes-256-gcm", refKeys()[REF_VERSION], iv);
+  cipher.setAAD(refAad(REF_VERSION));
+  const sealed = Buffer.concat([cipher.update(String(leadId), "utf8"), cipher.final(), cipher.getAuthTag()]);
+  return `${REF_VERSION}.${iv.toString("base64url")}.${sealed.toString("base64url")}`;
 }
-function verifyUnsubscribeToken(token) {
-  const [payload, sig] = String(token || "").split(".");
-  if (!payload || !sig) return null;
-  const expected = Buffer.from(signPayload(payload)), given = Buffer.from(sig);
-  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
+// -> { leadId, version } or null. Every failure is the same null: callers show one generic error.
+function decryptRef(ref) {
+  const m = /^(v\d+)\.([A-Za-z0-9_-]{16})\.([A-Za-z0-9_-]{22,200})$/.exec(String(ref || ""));
+  if (!m || String(ref).length > 200) return null;
+  const [, version, ivB64, sealedB64] = m;
+  const key = refKeys()[version];
+  if (!key) return null;
+  const sealed = Buffer.from(sealedB64, "base64url");
   try {
-    const { localId, exp } = JSON.parse(Buffer.from(payload, "base64url").toString());
-    return exp > Date.now() ? { localId, expiresAt: new Date(exp).toISOString() } : null;
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivB64, "base64url"));
+    decipher.setAAD(refAad(version));
+    decipher.setAuthTag(sealed.subarray(sealed.length - 16));
+    const leadId = Buffer.concat([decipher.update(sealed.subarray(0, sealed.length - 16)), decipher.final()]).toString("utf8");
+    return /^\d+$/.test(leadId) ? { leadId: Number(leadId), version } : null;
   } catch {
-    return null;
+    return null; // tag didn't verify: forged or edited
   }
 }
-const TAXONOMY = JSON.parse(readFileSync(join(FLOW_DIR, "taxonomy/taxonomy.sample.json"), "utf8"));
+const INVALID_LINK = "This link is invalid or has expired.";
+
+// Stub Marketo: leads with email and cpmsPrefRef (git-ignored, like the stub CRM). Every CRM
+// person is also a lead — registrations sync there — given the next lead ID the first time it's
+// needed. Issuing cpmsPrefRef on creation stands in for the "Lead is Created" webhook to
+// cpms-lambda-pref-ref-issue; leads without one get it on load (the one-off batch).
+const MARKETO_FILE = join(HERE, "data", "stub-marketo.json");
+const saveMarketo = (store) => { mkdirSync(dirname(MARKETO_FILE), { recursive: true }); writeFileSync(MARKETO_FILE, JSON.stringify(store, null, 2)); };
+function loadMarketo() {
+  const store = existsSync(MARKETO_FILE) ? JSON.parse(readFileSync(MARKETO_FILE, "utf8")) : { leads: [] };
+  const missing = store.leads.filter((l) => !l.cpmsPrefRef);
+  missing.forEach((l) => { l.cpmsPrefRef = encryptRef(l.leadId); });
+  if (missing.length) saveMarketo(store);
+  return store;
+}
+const marketo = {
+  byLeadId: (leadId) => loadMarketo().leads.find((l) => String(l.leadId) === String(leadId)),
+  leadFor(email) {
+    const store = loadMarketo();
+    let lead = store.leads.find((l) => l.email === email);
+    if (!lead) {
+      const leadId = Math.max(1000000, ...store.leads.map((l) => l.leadId)) + 1;
+      lead = { leadId, email, cpmsPrefRef: encryptRef(leadId) };
+      store.leads.push(lead);
+      saveMarketo(store);
+    }
+    return lead;
+  },
+};
+// The email link's ref -> the lead it was issued for, or null. Decrypts, then checks the lead's
+// stored cpmsPrefRef is this one (issuing a new one revokes the old links).
+function leadForRef(ref) {
+  const opened = decryptRef(ref);
+  const lead = opened && marketo.byLeadId(opened.leadId);
+  return lead && lead.cpmsPrefRef === ref ? { lead, version: opened.version } : null;
+}
+
+// Stub OneTrust "Get Data Subject Token" (GET /rest/api/consent/v4/datasubjects/linktokens,
+// header identifier: <email>): one link token per data subject, valid for a year. The token is
+// appended to the preference centre URL to make the magic link. In memory — a restart issues new ones.
+const LINK_TOKEN_TTL_MS = 365 * 24 * 3600 * 1000;
+const linkTokens = new Map(); // email -> { token, createdDate, expiryDate }
+function oneTrustLinkToken(email) {
+  const existing = linkTokens.get(email);
+  if (existing && new Date(existing.expiryDate) > new Date()) return existing;
+  const now = Date.now();
+  const issued = { token: randomBytes(24).toString("base64"), createdDate: new Date(now).toISOString(), expiryDate: new Date(now + LINK_TOKEN_TTL_MS).toISOString() };
+  linkTokens.set(email, issued);
+  return issued;
+}
+const emailForLinkToken = (token) => [...linkTokens].find(([, t]) => t.token === token && new Date(t.expiryDate) > new Date())?.[0];
+const LINK_TOKEN_REQUEST = (email) => `GET https://{hostname}/rest/api/consent/v4/datasubjects/linktokens · identifier: ${email}`;
+
 
 function loadEnv(path) {
   const env = {};
@@ -187,27 +250,6 @@ function buildEvent({ flow, email, locale }) {
     consent: f.purposes.map((purpose) => ({ purpose, status: "granted", capturedAt: now, captureMethod: f.captureMethod })),
     provenance,
   };
-}
-
-// changes: { consent: [{purpose, status}], preferences: [{topic, channel, status}] } — only what changed.
-function buildUpdateEvent(email, changes = {}, captureMethod = UPDATE_FLOW.captureMethod) {
-  const now = isoNow();
-  const event = {
-    schemaVersion: "1.0",
-    eventId: randomUUID(),
-    eventType: UPDATE_FLOW.eventType,
-    sourceSystem: UPDATE_FLOW.sourceSystem,
-    occurredAt: now,
-    subject: { identifierType: "email", identifierValue: email },
-    provenance: { sourceEventId: `${UPDATE_FLOW.sourceSystem}-${randomUUID().slice(0, 12)}`, captureChannel: "web", policyVersion: POLICY_VERSION },
-  };
-  const consent = (changes.consent || []).filter((c) => CONSENT_STATUSES.includes(c.status))
-    .map((c) => ({ purpose: String(c.purpose), status: c.status, capturedAt: now, captureMethod }));
-  const preferences = (changes.preferences || []).filter((p) => PREFERENCE_STATUSES.includes(p.status))
-    .map((p) => ({ topic: String(p.topic), channel: String(p.channel), status: p.status, capturedAt: now }));
-  if (consent.length) event.consent = consent;
-  if (preferences.length) event.preferences = preferences;
-  return event;
 }
 
 function schemaErrors(event) {
@@ -256,96 +298,18 @@ async function runResult(eventId) {
   return { outcome: result.outcome, requests: result.requests || [], dropped: result.dropped || [], warning: result.warning, record };
 }
 
-// --- Preference centre: OneTrust stand-in built from CPMS records.
-// The watermark (cpms/watermarks/<sha256(email)>.json) lists every item CPMS has sent for the
-// person with the eventId of the latest decision; that event's success record holds its status.
-// So: read the watermark, then one success record per distinct eventId — no scanning.
-async function readJson(key) {
-  try {
-    const obj = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
-    return JSON.parse(await obj.Body.transformToString());
-  } catch (e) {
-    if (e.name === "NoSuchKey") return null;
-    throw e;
-  }
-}
-
-async function latestSuccessRecord(eventId) {
-  const resp = await s3.send(new ListObjectsV2Command({ Bucket: BUCKET, Prefix: `${PREFIX}/success/${recordId(eventId)}/` }));
-  const latest = (resp.Contents || []).sort((a, b) => b.LastModified - a.LastModified)[0];
-  return latest ? readJson(latest.Key) : null;
-}
-
-const describe = (kind, code) => (TAXONOMY[kind].find((e) => e.code === code) || {}).description || code;
-const inTaxonomy = (kind, code) => TAXONOMY[kind].some((e) => e.code === code);
-
-async function subjectPreferences(email) {
-  const watermarkKey = `${PREFIX}/watermarks/${createHash("sha256").update(email).digest("hex")}.json`;
-  const marks = (await readJson(watermarkKey)) || {};
-  const records = new Map();
-  for (const { eventId } of Object.values(marks)) {
-    if (!records.has(eventId)) records.set(eventId, await latestSuccessRecord(eventId));
-  }
-  const purposes = [], preferences = [];
-  for (const [item, mark] of Object.entries(marks)) {
-    const state = records.get(mark.eventId);
-    const canonical = state?.canonical?.record || {};
-    const origin = { capturedAt: mark.capturedAt, eventId: mark.eventId, sourceSystem: canonical.header?.sourceSystem, eventType: canonical.header?.eventType };
-    const [kind, a, b] = item.split("#");
-    // records can mention codes since removed from the taxonomy — they're no longer settings
-    if (kind === "purpose" && !inTaxonomy("purposeCodes", a)) continue;
-    if (kind === "pref" && !inTaxonomy("topicCodes", a)) continue;
-    if (kind === "purpose") {
-      const c = (canonical.consent || []).find((x) => x.purposeCode === a && x.capturedAt === mark.capturedAt);
-      purposes.push({ purposeCode: a, label: describe("purposeCodes", a), status: c?.status ?? "unknown", legalBasis: c?.legalBasis, captureMethod: c?.captureMethod, ...origin });
-    } else if (kind === "pref") {
-      const p = (canonical.preferences || []).find((x) => x.topicCode === a && x.channel === b && x.capturedAt === mark.capturedAt);
-      preferences.push({ topicCode: a, label: describe("topicCodes", a), channel: b, status: p?.status ?? "unknown", ...origin });
-    }
-  }
-  return { email, source: "CPMS records (stand-in for OneTrust)", watermark: `s3://${BUCKET}/${watermarkKey}`, purposes, preferences };
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const cookie = (req, name) => (req.headers.cookie || "").split(";").map((c) => c.trim().split("=")).find(([k]) => k === name)?.[1];
 const sessionOf = (req) => sessions.get(cookie(req, "cpms_session"));
-
-// Who a preference request may act for: the unsubscribe link's token when one is sent (it wins
-// over any session, so a link always opens its own recipient's settings), else the signed-in user.
-function accessOf(req) {
-  const token = req.get("X-Unsubscribe-Token");
-  if (token) {
-    const link = verifyUnsubscribeToken(token);
-    return link ? { ...link, via: "unsubscribe_link" } : { error: "This unsubscribe link is invalid or has expired." };
-  }
-  const session = sessionOf(req);
-  return session ? { localId: session.localId, via: "session" } : { error: "Sign in first." };
-}
-const captureMethodOf = (access) => (access.via === "unsubscribe_link" ? "email_unsubscribe_link" : UPDATE_FLOW.captureMethod);
 
 const app = express();
 app.use(express.json({ limit: "256kb" }));
 app.use(express.static(join(HERE, "public")));
 
-app.get("/api/config", (req, res) => res.json({
-  event: EVENT, firmSizes: FIRM_SIZES, companyTypes: COMPANY_TYPES, bus: BUS_NAME,
-  taxonomy: {
-    purposes: TAXONOMY.purposeCodes.map(({ code, description, legalBasis }) => ({ code, description, legalBasis })),
-    topics: TAXONOMY.topicCodes.map(({ code, description, purposeCode }) => ({ code, description, purposeCode })),
-    channels: TAXONOMY.channels.map(({ code }) => code),
-  },
-}));
+app.get("/api/config", (req, res) => res.json({ event: EVENT, firmSizes: FIRM_SIZES, companyTypes: COMPANY_TYPES, bus: BUS_NAME }));
 
 app.post("/api/preview", (req, res) => {
   const body = req.body || {};
-  if (body.flow === "update") {
-    // the subject always comes from the session or the unsubscribe link, never from the browser
-    const access = accessOf(req);
-    if (access.error) return res.status(401).json({ errors: [access.error] });
-    const event = buildUpdateEvent(crm.byLocalId(access.localId).email, body.changes, captureMethodOf(access));
-    const errors = event.consent || event.preferences ? schemaErrors(event) : ["No changes to send."];
-    return res.status(errors.length ? 400 : 200).json({ event, entry: putEntry(event), errors });
-  }
   const event = buildEvent(body);
   if (!event) return res.status(400).json({ errors: [`unknown flow '${(req.body || {}).flow}'`] });
   const errors = schemaErrors(event);
@@ -356,23 +320,17 @@ app.post("/api/send", async (req, res) => {
   const { event = {}, profile = {} } = req.body || {};
   const errors = schemaErrors(event);
   if (errors.length) return res.status(400).json({ errors });
-  if (event.eventType === UPDATE_FLOW.eventType) {
-    // a preference change may only be sent for the signed-in user / the unsubscribe link's recipient
-    const access = accessOf(req);
-    if (access.error || event.subject.identifierValue !== crm.byLocalId(access.localId)?.email) {
-      return res.status(403).json({ errors: ["You can only change your own preferences."] });
-    }
-  }
   try {
     const resp = await eventBridge.send(new PutEventsCommand({ Entries: [{ ...putEntry(event), Detail: JSON.stringify(event) }] }));
     const entry = resp.Entries[0];
     if (resp.FailedEntryCount) return res.status(502).json({ errors: [`${entry.ErrorCode}: ${entry.ErrorMessage}`] });
-    // a registration creates the person in the stub CRM, so they can sign in to the preference centre
-    const user = event.eventType === UPDATE_FLOW.eventType ? null : crm.add({
+    // a registration creates the person in the stub CRM, so they can sign in to the secure portal
+    const user = crm.add({
       email: event.subject.identifierValue,
       firstName: String(profile.firstName || "").trim(), lastName: String(profile.lastName || "").trim(), company: String(profile.company || "").trim(),
     });
-    res.json({ eventBridgeId: entry.EventId, bus: BUS_NAME, ...(user && { crmLocalId: user.localId }) });
+    marketo.leadFor(user.email); // and syncs to Marketo as a lead, so marketing email can reach them
+    res.json({ eventBridgeId: entry.EventId, bus: BUS_NAME, crmLocalId: user.localId });
   } catch (e) {
     res.status(502).json({ errors: [`${e.name}: ${e.message}`] }); // missing bus, permissions, …
   }
@@ -387,7 +345,7 @@ app.get("/api/result", async (req, res) => {
   }
 });
 
-// --- Preference centre (simulated sign-in, stub CRM, OneTrust stand-in)
+// --- Secure portal (simulated sign-in, stub CRM)
 const displayName = (u) => [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email;
 
 app.get("/api/session", (req, res) => {
@@ -413,55 +371,93 @@ app.post("/api/logout", (req, res) => {
   res.json({ signedIn: false });
 });
 
-// --- Email unsubscribe: a sample marketing email whose unsubscribe link carries a signed token.
-// The recipient list stands in for the email platform's audience (local test app only).
+// --- Email link (Marketo): a sample marketing email whose link carries the lead's pre-encrypted
+// lead ID ({{lead.cpmsPrefRef}}), as Marketo sends it. The recipient list stands in for the audience.
 app.get("/api/email/recipients", (req, res) => {
-  res.json({ recipients: loadCrm().users.map((u) => ({ localId: u.localId, name: displayName(u), email: u.email })) });
+  res.json({ recipients: loadCrm().users.map((u) => ({ leadId: marketo.leadFor(u.email).leadId, name: displayName(u), email: u.email })) });
 });
 
 app.get("/api/email/message", (req, res) => {
-  const user = crm.byLocalId(String(req.query.localId || ""));
-  if (!user) return res.status(404).json({ errors: ["No such recipient."] });
+  const lead = marketo.byLeadId(String(req.query.leadId || ""));
+  const user = lead && crm.byEmail(lead.email);
+  if (!lead) return res.status(404).json({ errors: ["No such recipient."] });
   res.json({
     from: "Vanguard Adviser Insights <insights@vanguard.example>",
-    to: `${displayName(user)} <${user.email}>`,
+    to: user ? `${displayName(user)} <${lead.email}>` : lead.email,
     subject: "Markets this week: what the Autumn Budget means for your clients",
-    token: unsubscribeToken(user.localId),
+    ref: lead.cpmsPrefRef,
   });
 });
 
-// The unsubscribe link -> whose link it is (the token is checked, nothing else is trusted).
-app.get("/api/unsubscribe/link", (req, res) => {
-  const access = accessOf(req);
-  if (access.via !== "unsubscribe_link") return res.status(401).json({ errors: [access.error || "No unsubscribe link."] });
-  res.json({ localId: access.localId, expiresAt: access.expiresAt });
+// --- Marketo endpoint (/marketo/preferences): the email link points here, so everything under it
+// knows the ref is a Marketo pre-encrypted lead ID — no "source" parameter.
+const MARKETO_ENDPOINT = "/api/marketo/preferences";
+
+// Step 1: validate and decrypt the ref (no lookup yet).
+app.get(`${MARKETO_ENDPOINT}/decrypt`, async (req, res) => {
+  await sleep(300);
+  const opened = decryptRef(req.query.ref);
+  if (!opened) return res.status(400).json({ errors: [INVALID_LINK] });
+  res.json({ leadId: opened.leadId, version: opened.version, request: `AES-256-GCM decrypt · key ${opened.version} (cpms-secret-pref-ref-key)` });
 });
 
-// Stub CRM: local ID -> email. Only for the signed-in user's (or the unsubscribe link's) own
-// local ID — the link alone must not reveal anyone else's details.
-app.get("/api/crm/subject", async (req, res) => {
-  const access = accessOf(req);
-  if (access.error) return res.status(401).json({ errors: [access.error] });
-  const localId = String(req.query.localId || "");
-  if (localId !== access.localId) return res.status(403).json({ errors: ["This link belongs to a different user."] });
+// Step 2 — stub Marketo "Get Lead by Id": email, and the stored cpmsPrefRef must match the link.
+app.get(`${MARKETO_ENDPOINT}/lead`, async (req, res) => {
   await sleep(600); // feels like a network call
+  const found = leadForRef(req.query.ref);
+  if (!found) return res.status(400).json({ errors: [INVALID_LINK] });
+  const { lead } = found;
+  res.json({ leadId: lead.leadId, email: lead.email, request: `GET https://{munchkin-id}.mktorest.com/rest/v1/lead/${lead.leadId}.json?fields=email,cpmsPrefRef` });
+});
+
+// Step 3: OneTrust magic link for the lead whose ref is in the link — the ref, never a bare lead ID.
+app.get(`${MARKETO_ENDPOINT}/magiclink`, async (req, res) => {
+  const email = leadForRef(req.query.ref)?.lead.email;
+  if (!email) return res.status(400).json({ errors: [INVALID_LINK] });
+  res.json(await magicLink(email));
+});
+
+// --- Website endpoint (/website/preferences): the signed-in Vanguard 365 user's own preferences.
+const WEBSITE_ENDPOINT = "/api/website/preferences";
+
+// Step 1–2 — session check + stub CRM: local ID -> email. Only for the signed-in user's own local
+// ID — the link alone must not reveal anyone else's details.
+app.get(`${WEBSITE_ENDPOINT}/subject`, async (req, res) => {
+  const session = sessionOf(req);
+  if (!session) return res.status(401).json({ errors: ["Sign in first."] });
+  const localId = String(req.query.localId || "");
+  if (localId !== session.localId) return res.status(403).json({ errors: ["This link belongs to a different user."] });
+  await sleep(600);
   const record = crm.byLocalId(localId);
   if (!record) return res.status(404).json({ errors: [`CRM has no record for ${localId}.`] });
-  res.json({ localId, email: record.email, company: record.company });
+  res.json({ localId, email: record.email, request: `CRM lookup · local ID ${localId} → email` });
 });
 
-// OneTrust "get preferences" stand-in. Same ownership check: only that user's own email.
-app.get("/api/onetrust/preferences", async (req, res) => {
-  const access = accessOf(req);
-  if (access.error) return res.status(401).json({ errors: [access.error] });
-  const email = String(req.query.email || "");
-  if (email !== crm.byLocalId(access.localId)?.email) return res.status(403).json({ errors: ["You can only view your own preferences."] });
-  try {
-    await sleep(400);
-    res.json(await subjectPreferences(email));
-  } catch (e) {
-    res.status(502).json({ errors: [`${e.name}: ${e.message}`] });
-  }
+// Step 3: OneTrust magic link for the signed-in user (email from their CRM record, never the browser).
+app.get(`${WEBSITE_ENDPOINT}/magiclink`, async (req, res) => {
+  const session = sessionOf(req);
+  if (!session) return res.status(401).json({ errors: ["Sign in first."] });
+  if (String(req.query.localId || "") !== session.localId) return res.status(403).json({ errors: ["This link belongs to a different user."] });
+  const email = crm.byLocalId(session.localId)?.email;
+  if (!email) return res.status(404).json({ errors: ["Couldn't work out whose link this is."] });
+  res.json(await magicLink(email));
+});
+
+// Stub OneTrust "Get Data Subject Token" for an email the endpoint has already worked out.
+async function magicLink(email) {
+  await sleep(500);
+  const issued = oneTrustLinkToken(email);
+  return { email, ...issued, request: LINK_TOKEN_REQUEST(email),
+    // the stand-in for OneTrust's hosted preference centre (a real tenant URL replaces this)
+    url: `#/onetrust?token=${encodeURIComponent(issued.token)}`, standIn: true };
+}
+
+// Stand-in OneTrust preference centre: which person a magic link opens.
+app.get("/api/onetrust/preference-centre", (req, res) => {
+  const token = String(req.query.token || "");
+  const email = emailForLinkToken(token);
+  if (!email) return res.status(404).json({ errors: ["This link is invalid or has expired."] });
+  res.json({ email, expiryDate: linkTokens.get(email).expiryDate });
 });
 
 // --- Open questions: consent_fanout/<doc>.md shown one question at a time, with comments.
@@ -477,7 +473,9 @@ const commentsFile = (doc) => join(QUESTIONS_DIR, "comments", `${doc}.json`);
 // Known diagrams in pipeline order, with their sidebar names; any other diagram follows,
 // named after its file.
 const SCHEMATIC_ORDER = [
-  { file: "send_to_cpms/diagrams/Send_To_OneTrust.drawio", label: "Send_To_OneTrust" },
+  { file: "send_to_cpms/diagrams/New_Consent_Record.drawio", label: "New_Consent_Record" },
+  { file: "send_to_cpms/diagrams/Email_Consent_Update.drawio", label: "Email_Consent_Update" },
+  { file: "send_to_cpms/diagrams/Website_Consent_Update.drawio", label: "Website_Consent_Update" },
   { file: "consent_fanout/diagrams/OT_to_SFMC.drawio", label: "OT to SFMC" },
 ];
 const decodeEntities = (s) => s.replace(/&amp;/g, "&").replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
