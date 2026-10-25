@@ -1,0 +1,24 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PutEventsOnTheConsentBus",
+      "Effect": "Allow",
+      "Action": "events:PutEvents",
+      "Resource": "arn:aws:events:REGION:ACCOUNT_ID:event-bus/cpms-eventbus-consent"
+    },
+    {
+      "Sid": "ListRunRecords",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::BUCKET_NAME",
+      "Condition": { "StringLike": { "s3:prefix": ["cpms/success/*", "cpms/fail/*"] } }
+    },
+    {
+      "Sid": "ReadRunRecords",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": ["arn:aws:s3:::BUCKET_NAME/cpms/success/*", "arn:aws:s3:::BUCKET_NAME/cpms/fail/*"]
+    }
+  ]
+}

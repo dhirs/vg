@@ -7,7 +7,9 @@
 // requests / skipped / rejected) from the run's record in S3:
 // cpms/{success,fail}/<eventId>/<run>.json.
 //
-// The browser never sees AWS credentials — they're read here from the repo-root .env.prod.
+// The browser never sees AWS credentials — they're read here from the repo-root .env.prod when
+// it exists (local use), otherwise from environment variables (the server, via systemd).
+// Server settings: PORT, HOST, COOKIE_SECURE=1 behind HTTPS — see INSTALL.md.
 //
 // Updating consent — neither page shows or edits settings; both identify the person, ask OneTrust
 // for that person's magic link, and redirect to OneTrust's preference centre, where the change is
@@ -36,7 +38,9 @@ import express from "express";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FLOW_DIR = join(HERE, "..");
 const REPO_ROOT = join(FLOW_DIR, "..");
-const PORT = 8600;
+const PORT = Number(process.env.PORT) || 8600;
+const HOST = process.env.HOST || "127.0.0.1"; // behind nginx: only reachable through the proxy
+const COOKIE_FLAGS = `HttpOnly; SameSite=Lax; Path=/${process.env.COOKIE_SECURE === "1" ? "; Secure" : ""}`;
 const BUS_NAME = "cpms-eventbus-consent";
 const PREFIX = "cpms";
 
@@ -210,6 +214,7 @@ const LINK_TOKEN_REQUEST = (email) => `GET https://{hostname}/rest/api/consent/v
 
 function loadEnv(path) {
   const env = {};
+  if (!existsSync(path)) return env;
   for (const raw of readFileSync(path, "utf8").split("\n")) {
     const line = raw.trim();
     if (!line || line.startsWith("#") || !line.includes("=")) continue;
@@ -219,7 +224,15 @@ function loadEnv(path) {
   return env;
 }
 
-const env = loadEnv(join(REPO_ROOT, ".env.prod"));
+// .env.prod (if present) first, then real environment variables win — on the server there's no file.
+const ENV_KEYS = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION", "AWS_BUCKET_NAME"];
+const env = { ...loadEnv(join(REPO_ROOT, ".env.prod")),
+  ...Object.fromEntries(ENV_KEYS.filter((k) => process.env[k]).map((k) => [k, process.env[k]])) };
+const missing = ENV_KEYS.filter((k) => !env[k]);
+if (missing.length) {
+  console.error(`Missing settings: ${missing.join(", ")} — set them in .env.prod (local) or the environment (server).`);
+  process.exit(1);
+}
 const awsConfig = {
   region: env.AWS_DEFAULT_REGION,
   credentials: { accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY },
@@ -361,13 +374,13 @@ app.post("/api/login", (req, res) => {
   if (!user) return res.status(401).json({ errors: [`No account found for ${email || "that email"}. Register on the event or account page first.`] });
   const id = randomUUID();
   sessions.set(id, { localId: user.localId });
-  res.setHeader("Set-Cookie", `cpms_session=${id}; HttpOnly; SameSite=Lax; Path=/`);
+  res.setHeader("Set-Cookie", `cpms_session=${id}; ${COOKIE_FLAGS}`);
   res.json({ signedIn: true, user: { name: displayName(user), localId: user.localId } });
 });
 
 app.post("/api/logout", (req, res) => {
   sessions.delete(cookie(req, "cpms_session"));
-  res.setHeader("Set-Cookie", "cpms_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+  res.setHeader("Set-Cookie", `cpms_session=; ${COOKIE_FLAGS}; Max-Age=0`);
   res.json({ signedIn: false });
 });
 
@@ -478,6 +491,7 @@ const SCHEMATIC_ORDER = [
   { file: "send_to_cpms/diagrams/Website_Consent_Update.drawio", label: "Website_Consent_Update" },
   { file: "send_to_cpms/diagrams/CPMS_Router.drawio", label: "CPMS_Router" },
   { file: "consent_fanout/diagrams/OT_to_SFMC.drawio", label: "OT to SFMC" },
+  { file: "consent_fanout/diagrams/CPMS_Marketo_Bridge.drawio", label: "CPMS_Marketo_Bridge" },
 ];
 const decodeEntities = (s) => s.replace(/&amp;/g, "&").replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
   .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"');
@@ -633,4 +647,4 @@ app.delete("/api/questions/:doc/comments/:id", (req, res) => {
   res.json({ comments: store.comments });
 });
 
-app.listen(PORT, "127.0.0.1", () => console.log(`CPMS registration test app running at http://localhost:${PORT}`));
+app.listen(PORT, HOST, () => console.log(`CPMS registration test app running at http://${HOST}:${PORT}`));

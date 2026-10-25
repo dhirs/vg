@@ -1,0 +1,32 @@
+# systemd unit for the CPMS test app. Installed to /etc/systemd/system/cpms-web.service
+# (see send_to_cpms/web/INSTALL.md). Runs as the unprivileged "cpms" user, bound to 127.0.0.1
+# so only nginx can reach it; settings and AWS keys come from /etc/cpms/cpms-web.env.
+[Unit]
+Description=CPMS test app (Node.js)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cpms
+Group=cpms
+WorkingDirectory=/opt/cpms/app/send_to_cpms/web
+EnvironmentFile=/etc/cpms/cpms-web.env
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=3
+
+# Hardening: read-only filesystem except the two folders the app writes to.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/cpms/app/send_to_cpms/web/data /opt/cpms/app/consent_fanout/comments
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

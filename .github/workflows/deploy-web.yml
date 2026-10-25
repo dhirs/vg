@@ -1,0 +1,74 @@
+# Deploys the CPMS test app (send_to_cpms/web) to the Hetzner server.
+# Copies the repo's files over SSH (rsync), installs dependencies on the server, restarts the
+# systemd service and checks it answers. AWS keys never come from here — they live only on the
+# server in /etc/cpms/cpms-web.env. One-time server setup: send_to_cpms/web/INSTALL.md.
+#
+# Repository secrets:   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS
+# Repository variables: DEPLOY_ENABLED=true (the job is skipped until set), DEPLOY_PATH (default
+#                       /opt/cpms/app), DEPLOY_PORT (default 22)
+name: Deploy web app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "send_to_cpms/web/**"
+      - "send_to_cpms/schemas/**"
+      - "send_to_cpms/taxonomy/**"
+      - "send_to_cpms/docs/**"
+      - "send_to_cpms/diagrams/**"
+      - "consent_fanout/**"
+      - ".github/workflows/deploy-web.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: vars.DEPLOY_ENABLED == 'true'   # skipped until the server is set up (INSTALL.md, Step 11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/cpms/app' }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Copy files to the server
+        run: |
+          rsync -az --delete --chmod=D755,F644 \
+            --exclude-from=send_to_cpms/web/hosting/rsync-exclude.txt \
+            -e "ssh -i ~/.ssh/deploy_key -p $DEPLOY_PORT -o StrictHostKeyChecking=yes" \
+            ./ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+
+      - name: Install dependencies and restart
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" "DEPLOY_PATH='$DEPLOY_PATH' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_PATH/send_to_cpms/web"
+          npm ci --omit=dev --no-audit --no-fund
+          sudo -n /usr/bin/systemctl restart cpms-web
+          for i in $(seq 1 20); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8600/; then echo "cpms-web is up"; exit 0; fi
+            sleep 1
+          done
+          echo "cpms-web did not come up" >&2
+          sudo -n /usr/bin/journalctl -u cpms-web -n 50 --no-pager >&2 || true
+          exit 1
+          REMOTE

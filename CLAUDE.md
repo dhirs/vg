@@ -25,8 +25,8 @@ a different flow. Each flow folder is internally structured the same way:
                          upload schemas/taxonomy (idempotent — safe to re-run)
 ```
 
-Root only holds this `CLAUDE.md`, `README.md`, and the flow folders — no design content
-lives at root.
+Root only holds this `CLAUDE.md`, `README.md`, the flow folders and `.github/` (the deploy
+workflow — GitHub requires it at the root) — no design content lives at root.
 
 ### Current flows
 
@@ -130,6 +130,11 @@ deployed and run on their own. Re-run the deploy scripts only after changing the
   machine (it ends with an AccessDenied on the failure alarm until the IAM user gets
   `cloudwatch:PutMetricAlarm`; everything before that is applied)
 - `python3 send_to_cpms/deploy/setup_ingestion.py` — after editing the bus / rule / ingestion queue
+
+**On a server:** `send_to_cpms/web/INSTALL.md` sets it up behind nginx (HTTPS + basic auth,
+systemd service `cpms-web`, settings from `/etc/cpms/cpms-web.env` instead of `.env.prod`);
+after that, pushes to `main` deploy through `.github/workflows/deploy-web.yml`. Server files:
+`send_to_cpms/web/hosting/`.
 
 **Using it:** register on the EMO or CL6 page (any email) → that person is added to the
 stub CRM (`send_to_cpms/web/data/stub-crm.json`) and stub Marketo

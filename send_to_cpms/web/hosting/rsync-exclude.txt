@@ -1,0 +1,16 @@
+# What the GitHub Action does NOT copy to the server (rsync --exclude-from).
+# Excluded paths are also never deleted on the server, so its own data survives every deploy.
+.git/
+.github/
+.env*
+node_modules/
+.DS_Store
+__pycache__/
+*.pyc
+*.preview.html
+# Server-owned data: stub CRM / Marketo, the ref key, and comments people add on the server.
+send_to_cpms/web/data/
+consent_fanout/comments/
+# Not needed to run the app.
+send_to_cpms/lambdas/
+send_to_cpms/deploy/
