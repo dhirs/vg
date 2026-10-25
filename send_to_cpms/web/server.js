@@ -15,8 +15,11 @@
 // connectivity yet) -> shown as editable settings -> only the *changes* are sent to CPMS as a
 // preference_update from CL6.
 //
+// Also: "Open questions" pages — each consent_fanout/<doc>.md (e.g. SFMC.md) rendered question
+// by question, with comments saved to consent_fanout/comments/<doc>.json.
+//
 // Usage: cd send_to_cpms/web && npm install && npm start   ->   http://localhost:8600
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -110,6 +113,36 @@ const crm = {
   },
 };
 const sessions = new Map(); // session id -> { localId }
+
+// Email unsubscribe link: a signed, expiring token for one local ID instead of a session —
+// unsubscribing mustn't require signing in, and a bare local ID could be edited to reach
+// someone else's settings. The secret lives in data/ (git-ignored) so links survive a restart.
+const UNSUBSCRIBE_SECRET_FILE = join(HERE, "data", "unsubscribe-secret");
+const UNSUBSCRIBE_TTL_MS = 30 * 24 * 3600 * 1000;
+function unsubscribeSecret() {
+  if (!existsSync(UNSUBSCRIBE_SECRET_FILE)) {
+    mkdirSync(dirname(UNSUBSCRIBE_SECRET_FILE), { recursive: true });
+    writeFileSync(UNSUBSCRIBE_SECRET_FILE, randomBytes(32).toString("hex"));
+  }
+  return readFileSync(UNSUBSCRIBE_SECRET_FILE, "utf8").trim();
+}
+const signPayload = (payload) => createHmac("sha256", unsubscribeSecret()).update(payload).digest("base64url");
+function unsubscribeToken(localId) {
+  const payload = Buffer.from(JSON.stringify({ localId, exp: Date.now() + UNSUBSCRIBE_TTL_MS })).toString("base64url");
+  return `${payload}.${signPayload(payload)}`;
+}
+function verifyUnsubscribeToken(token) {
+  const [payload, sig] = String(token || "").split(".");
+  if (!payload || !sig) return null;
+  const expected = Buffer.from(signPayload(payload)), given = Buffer.from(sig);
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
+  try {
+    const { localId, exp } = JSON.parse(Buffer.from(payload, "base64url").toString());
+    return exp > Date.now() ? { localId, expiresAt: new Date(exp).toISOString() } : null;
+  } catch {
+    return null;
+  }
+}
 const TAXONOMY = JSON.parse(readFileSync(join(FLOW_DIR, "taxonomy/taxonomy.sample.json"), "utf8"));
 
 function loadEnv(path) {
@@ -157,7 +190,7 @@ function buildEvent({ flow, email, locale }) {
 }
 
 // changes: { consent: [{purpose, status}], preferences: [{topic, channel, status}] } — only what changed.
-function buildUpdateEvent(email, changes = {}) {
+function buildUpdateEvent(email, changes = {}, captureMethod = UPDATE_FLOW.captureMethod) {
   const now = isoNow();
   const event = {
     schemaVersion: "1.0",
@@ -169,7 +202,7 @@ function buildUpdateEvent(email, changes = {}) {
     provenance: { sourceEventId: `${UPDATE_FLOW.sourceSystem}-${randomUUID().slice(0, 12)}`, captureChannel: "web", policyVersion: POLICY_VERSION },
   };
   const consent = (changes.consent || []).filter((c) => CONSENT_STATUSES.includes(c.status))
-    .map((c) => ({ purpose: String(c.purpose), status: c.status, capturedAt: now, captureMethod: UPDATE_FLOW.captureMethod }));
+    .map((c) => ({ purpose: String(c.purpose), status: c.status, capturedAt: now, captureMethod }));
   const preferences = (changes.preferences || []).filter((p) => PREFERENCE_STATUSES.includes(p.status))
     .map((p) => ({ topic: String(p.topic), channel: String(p.channel), status: p.status, capturedAt: now }));
   if (consent.length) event.consent = consent;
@@ -277,6 +310,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const cookie = (req, name) => (req.headers.cookie || "").split(";").map((c) => c.trim().split("=")).find(([k]) => k === name)?.[1];
 const sessionOf = (req) => sessions.get(cookie(req, "cpms_session"));
 
+// Who a preference request may act for: the unsubscribe link's token when one is sent (it wins
+// over any session, so a link always opens its own recipient's settings), else the signed-in user.
+function accessOf(req) {
+  const token = req.get("X-Unsubscribe-Token");
+  if (token) {
+    const link = verifyUnsubscribeToken(token);
+    return link ? { ...link, via: "unsubscribe_link" } : { error: "This unsubscribe link is invalid or has expired." };
+  }
+  const session = sessionOf(req);
+  return session ? { localId: session.localId, via: "session" } : { error: "Sign in first." };
+}
+const captureMethodOf = (access) => (access.via === "unsubscribe_link" ? "email_unsubscribe_link" : UPDATE_FLOW.captureMethod);
+
 const app = express();
 app.use(express.json({ limit: "256kb" }));
 app.use(express.static(join(HERE, "public")));
@@ -293,10 +339,10 @@ app.get("/api/config", (req, res) => res.json({
 app.post("/api/preview", (req, res) => {
   const body = req.body || {};
   if (body.flow === "update") {
-    // the subject always comes from the session, never from the browser
-    const session = sessionOf(req);
-    if (!session) return res.status(401).json({ errors: ["Sign in first."] });
-    const event = buildUpdateEvent(crm.byLocalId(session.localId).email, body.changes);
+    // the subject always comes from the session or the unsubscribe link, never from the browser
+    const access = accessOf(req);
+    if (access.error) return res.status(401).json({ errors: [access.error] });
+    const event = buildUpdateEvent(crm.byLocalId(access.localId).email, body.changes, captureMethodOf(access));
     const errors = event.consent || event.preferences ? schemaErrors(event) : ["No changes to send."];
     return res.status(errors.length ? 400 : 200).json({ event, entry: putEntry(event), errors });
   }
@@ -311,9 +357,9 @@ app.post("/api/send", async (req, res) => {
   const errors = schemaErrors(event);
   if (errors.length) return res.status(400).json({ errors });
   if (event.eventType === UPDATE_FLOW.eventType) {
-    // a preference change may only be sent for the signed-in user
-    const session = sessionOf(req);
-    if (!session || event.subject.identifierValue !== crm.byLocalId(session.localId)?.email) {
+    // a preference change may only be sent for the signed-in user / the unsubscribe link's recipient
+    const access = accessOf(req);
+    if (access.error || event.subject.identifierValue !== crm.byLocalId(access.localId)?.email) {
       return res.status(403).json({ errors: ["You can only change your own preferences."] });
     }
   }
@@ -367,31 +413,138 @@ app.post("/api/logout", (req, res) => {
   res.json({ signedIn: false });
 });
 
-// Stub CRM: local ID -> email. Only for the signed-in user's own local ID — the link alone
-// must not reveal anyone else's details.
+// --- Email unsubscribe: a sample marketing email whose unsubscribe link carries a signed token.
+// The recipient list stands in for the email platform's audience (local test app only).
+app.get("/api/email/recipients", (req, res) => {
+  res.json({ recipients: loadCrm().users.map((u) => ({ localId: u.localId, name: displayName(u), email: u.email })) });
+});
+
+app.get("/api/email/message", (req, res) => {
+  const user = crm.byLocalId(String(req.query.localId || ""));
+  if (!user) return res.status(404).json({ errors: ["No such recipient."] });
+  res.json({
+    from: "Vanguard Adviser Insights <insights@vanguard.example>",
+    to: `${displayName(user)} <${user.email}>`,
+    subject: "Markets this week: what the Autumn Budget means for your clients",
+    token: unsubscribeToken(user.localId),
+  });
+});
+
+// The unsubscribe link -> whose link it is (the token is checked, nothing else is trusted).
+app.get("/api/unsubscribe/link", (req, res) => {
+  const access = accessOf(req);
+  if (access.via !== "unsubscribe_link") return res.status(401).json({ errors: [access.error || "No unsubscribe link."] });
+  res.json({ localId: access.localId, expiresAt: access.expiresAt });
+});
+
+// Stub CRM: local ID -> email. Only for the signed-in user's (or the unsubscribe link's) own
+// local ID — the link alone must not reveal anyone else's details.
 app.get("/api/crm/subject", async (req, res) => {
-  const session = sessionOf(req);
-  if (!session) return res.status(401).json({ errors: ["Sign in first."] });
+  const access = accessOf(req);
+  if (access.error) return res.status(401).json({ errors: [access.error] });
   const localId = String(req.query.localId || "");
-  if (localId !== session.localId) return res.status(403).json({ errors: ["This link belongs to a different user."] });
+  if (localId !== access.localId) return res.status(403).json({ errors: ["This link belongs to a different user."] });
   await sleep(600); // feels like a network call
   const record = crm.byLocalId(localId);
   if (!record) return res.status(404).json({ errors: [`CRM has no record for ${localId}.`] });
   res.json({ localId, email: record.email, company: record.company });
 });
 
-// OneTrust "get preferences" stand-in. Same ownership check: only the signed-in user's own email.
+// OneTrust "get preferences" stand-in. Same ownership check: only that user's own email.
 app.get("/api/onetrust/preferences", async (req, res) => {
-  const session = sessionOf(req);
-  if (!session) return res.status(401).json({ errors: ["Sign in first."] });
+  const access = accessOf(req);
+  if (access.error) return res.status(401).json({ errors: [access.error] });
   const email = String(req.query.email || "");
-  if (email !== crm.byLocalId(session.localId)?.email) return res.status(403).json({ errors: ["You can only view your own preferences."] });
+  if (email !== crm.byLocalId(access.localId)?.email) return res.status(403).json({ errors: ["You can only view your own preferences."] });
   try {
     await sleep(400);
     res.json(await subjectPreferences(email));
   } catch (e) {
     res.status(502).json({ errors: [`${e.name}: ${e.message}`] });
   }
+});
+
+// --- Open questions: consent_fanout/<doc>.md shown one question at a time, with comments.
+// The markdown file stays the source of truth; comments are kept next to it in
+// consent_fanout/comments/<doc>.json, keyed by question number.
+const QUESTIONS_DIR = join(HERE, "../../consent_fanout");
+const QUESTION_DOCS = ["SFMC"];
+const commentsFile = (doc) => join(QUESTIONS_DIR, "comments", `${doc}.json`);
+
+function parseQuestions(doc) {
+  const lines = readFileSync(join(QUESTIONS_DIR, `${doc}.md`), "utf8").split("\n");
+  const out = { title: "", intro: [], sections: [], questions: [] };
+  let section = null, group = null, question = null, indent = 0;
+  for (const line of lines) {
+    if (line.startsWith("# ")) { out.title = line.slice(2).trim(); continue; }
+    if (line.startsWith("## ")) {
+      question = null;
+      section = { title: line.slice(3).trim(), lines: [] };
+      if (section.title !== "Questions") out.sections.push(section);
+      continue;
+    }
+    if (!section) { out.intro.push(line); continue; }
+    if (section.title !== "Questions") { section.lines.push(line); continue; }
+    if (line.startsWith("### ")) { question = null; group = line.slice(4).trim(); continue; }
+    const m = line.match(/^(\d+)\.\s+(.*)$/);
+    if (m) {
+      indent = m[1].length + 2;
+      question = { n: Number(m[1]), group, lines: [m[2]] };
+      out.questions.push(question);
+    } else if (question) {
+      question.lines.push(line.startsWith(" ".repeat(indent)) ? line.slice(indent) : line.trimStart());
+    }
+  }
+  const text = (ls) => ls.join("\n").trim();
+  return {
+    title: out.title,
+    intro: text(out.intro),
+    sections: out.sections.map((s) => ({ title: s.title, markdown: text(s.lines) })),
+    questions: out.questions.map((q) => ({ n: q.n, group: q.group, markdown: text(q.lines) })),
+  };
+}
+const loadComments = (doc) => (existsSync(commentsFile(doc)) ? JSON.parse(readFileSync(commentsFile(doc), "utf8")) : { comments: [] });
+function saveComments(doc, store) {
+  mkdirSync(dirname(commentsFile(doc)), { recursive: true });
+  writeFileSync(commentsFile(doc), JSON.stringify(store, null, 2) + "\n");
+}
+const questionDoc = (req, res) => {
+  if (QUESTION_DOCS.includes(req.params.doc)) return req.params.doc;
+  res.status(404).json({ errors: [`No open-questions file "${req.params.doc}".`] });
+};
+
+app.get("/api/questions/:doc", (req, res) => {
+  const doc = questionDoc(req, res);
+  if (doc) res.json({ ...parseQuestions(doc), comments: loadComments(doc).comments });
+});
+
+app.post("/api/questions/:doc/comments", (req, res) => {
+  const doc = questionDoc(req, res);
+  if (!doc) return;
+  const { question, author, text } = req.body || {};
+  const q = parseQuestions(doc).questions.find((x) => x.n === question);
+  if (!q) return res.status(400).json({ errors: ["Unknown question."] });
+  if (!String(text || "").trim()) return res.status(400).json({ errors: ["Write a comment first."] });
+  const store = loadComments(doc);
+  const comment = {
+    id: randomUUID(), question,
+    questionTitle: q.markdown.match(/\*\*(.+?)\*\*/)?.[1] || "", // so a comment still reads right if questions get renumbered
+    author: String(author || "").trim().slice(0, 80) || "Anonymous",
+    text: String(text).trim().slice(0, 4000),
+    at: new Date().toISOString(),
+  };
+  store.comments.push(comment);
+  saveComments(doc, store);
+  res.json({ comments: store.comments });
+});
+
+app.delete("/api/questions/:doc/comments/:id", (req, res) => {
+  const doc = questionDoc(req, res);
+  if (!doc) return;
+  const store = loadComments(doc);
+  store.comments = store.comments.filter((c) => c.id !== req.params.id);
+  saveComments(doc, store);
+  res.json({ comments: store.comments });
 });
 
 app.listen(PORT, "127.0.0.1", () => console.log(`CPMS registration test app running at http://localhost:${PORT}`));

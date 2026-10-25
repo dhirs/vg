@@ -41,17 +41,21 @@ async function loadConfig() {
        <span><b>${esc(c.label)}</b><small>${esc(c.description)}</small></span></label>`).join("");
 }
 
-// ---------- routing: #/event, #/account, #/preferences[?localId=…]
-const PAGES = [...FLOWS, "preferences"];
+// ---------- routing: #/event, #/account, #/unsubscribe[?token=…], #/preferences[?localId=…], #/questions/<doc>
+const PAGES = [...FLOWS, "unsubscribe", "preferences", "questions"];
 function route() {
   const [path, query = ""] = location.hash.replace(/^#\//, "").split("?");
-  flow = PAGES.includes(path) ? path : "event";
+  const [page, doc] = path.split("/");
+  flow = PAGES.includes(page) ? page : "event";
   document.querySelectorAll("[data-flow]").forEach((el) => {
     const flows = el.dataset.flow.split(" ");
-    if (el.classList.contains("side-link")) el.classList.toggle("active", flows.includes(flow));
+    if (el.classList.contains("side-link")) el.classList.toggle("active", flows.includes(flow) && (!el.dataset.doc || el.dataset.doc === doc));
     else el.hidden = !flows.includes(flow);
   });
-  if (flow === "preferences") return preferenceCentre(new URLSearchParams(query).get("localId"));
+  if (flow === "questions") return openQuestions(doc);
+  const params = new URLSearchParams(query);
+  if (flow === "preferences") return preferenceCentre({ mode: "portal", localId: params.get("localId") });
+  if (flow === "unsubscribe") return preferenceCentre({ mode: "unsubscribe", token: params.get("token") });
   $("tab-form").textContent = flow === "event" ? "Register" : "Create account";
   showTab(tab);
 }
@@ -159,7 +163,8 @@ $("send").addEventListener("click", async () => {
   $("send").disabled = true;
   setStatus("Sending…");
   try {
-    const res = await fetch("/api/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event, profile }) });
+    const headers = { "Content-Type": "application/json", ...(f === "update" ? pc.headers : {}) };
+    const res = await fetch("/api/send", { method: "POST", headers, body: JSON.stringify({ event, profile }) });
     const data = await res.json();
     if (res.ok) {
       closeModal(); setStatus(""); $("send").disabled = false;
@@ -265,19 +270,30 @@ async function waitForResult(eventId, timeoutMs = 90_000) {
   throw new Error("No result after 90 seconds. Check the cpms-lambda-fifo-consumer logs and the ingestion DLQ.");
 }
 
-// ---------- preference centre
-const STEPS = [
-  { key: "signin", title: "Signed in", hint: "Vanguard 365 session" },
-  { key: "link", title: "Preference link", hint: "carries your local ID" },
+// ---------- preference centre: secure portal (signed in) and email unsubscribe link (signed token)
+// Same steps from the CRM lookup on; only how the person is identified differs.
+const SHARED_STEPS = [
   { key: "crm", title: "CRM lookup", hint: "local ID → email" },
   { key: "onetrust", title: "OneTrust lookup", hint: "email → preferences" },
   { key: "show", title: "Your settings", hint: "review & change" },
   { key: "save", title: "Changes saved", hint: "sent to CPMS" },
 ];
-const pc = { run: 0, status: {}, details: {}, subject: null, prefs: null, current: null, draft: null, banner: "" };
+const STEPS = {
+  portal: [
+    { key: "signin", title: "Signed in", hint: "Vanguard 365 session" },
+    { key: "link", title: "Preference link", hint: "carries your local ID" },
+    ...SHARED_STEPS,
+  ],
+  unsubscribe: [
+    { key: "email", title: "Marketing email", hint: "with an unsubscribe link" },
+    { key: "link", title: "Unsubscribe link", hint: "signed token · no sign-in" },
+    ...SHARED_STEPS,
+  ],
+};
+const pc = { run: 0, mode: "portal", headers: {}, status: {}, details: {}, subject: null, prefs: null, current: null, draft: null, banner: "", mailTo: null };
 
 function setProgress() {
-  $("progress").innerHTML = STEPS.map((step, i) => {
+  $("progress").innerHTML = STEPS[pc.mode].map((step, i) => {
     const st = pc.status[step.key] || "pending";
     const mark = st === "done" ? "✓" : st === "error" ? "!" : i + 1;
     return `<li class="${st}"><span class="dot">${st === "active" ? '<span class="spinner"></span>' : mark}</span>
@@ -292,13 +308,30 @@ const API = async (url, opts) => {
   return data;
 };
 
-async function preferenceCentre(localId) {
+async function preferenceCentre({ mode, localId, token }) {
   const run = ++pc.run;
   const live = () => run === pc.run;
-  Object.assign(pc, { status: {}, details: {}, subject: null, prefs: null, banner: "" });
+  Object.assign(pc, { mode, headers: token ? { "X-Unsubscribe-Token": token } : {}, status: {}, details: {}, subject: null, prefs: null, banner: "" });
   const step = (key, st, detail) => { pc.status[key] = st; if (detail) pc.details[key] = detail; if (live()) setProgress(); };
   const body = (html) => { if (live()) $("pc-body").innerHTML = html; };
   const fail = (key, err) => { step(key, "error", err.message); body(`<div class="callout err">${esc(err.message)}</div>`); };
+  $("signout").hidden = true;
+
+  if (mode === "unsubscribe") {
+    // 1. the marketing email; 2. its unsubscribe link -> whose link it is (checked by the server)
+    if (!token) {
+      step("email", "active", "click the link in the email");
+      try { return body(await emailHtml()); } catch (err) { return fail("email", err); }
+    }
+    step("email", "done", "link clicked");
+    step("link", "active", "checking link…");
+    let link;
+    try { link = await API("/api/unsubscribe/link", { headers: pc.headers }); } catch (err) { return fail("link", err); }
+    if (!live()) return;
+    localId = link.localId;
+    step("link", "done", `localId ${localId} · valid until ${new Date(link.expiresAt).toLocaleDateString()}`);
+    return lookUpAndShow(localId, { step, body, fail, live });
+  }
 
   // 1. signed in?
   step("signin", "active");
@@ -322,11 +355,14 @@ async function preferenceCentre(localId) {
         <span>Manage my preferences<small>…/preferences?localId=${esc(session.user.localId)}</small></span></a>`);
   }
   step("link", "done", `localId ${localId}`);
+  return lookUpAndShow(localId, { step, body, fail, live });
+}
 
+async function lookUpAndShow(localId, { step, body, fail, live }) {
   // 3. CRM: local ID -> email
   step("crm", "active", "asking CRM…");
   body(`<div class="callout warn"><span class="spinner"></span>Looking you up…</div>`);
-  try { pc.subject = await API(`/api/crm/subject?localId=${encodeURIComponent(localId)}`); } catch (err) { return fail("crm", err); }
+  try { pc.subject = await API(`/api/crm/subject?localId=${encodeURIComponent(localId)}`, { headers: pc.headers }); } catch (err) { return fail("crm", err); }
   step("crm", "done", pc.subject.email);
 
   // 4. OneTrust: email -> preferences (stand-in: CPMS records)
@@ -345,7 +381,7 @@ async function preferenceCentre(localId) {
 // registration's "you will also receive marketing communications" means email is on for every
 // topic under a granted purpose; SMS and push stay off until chosen. (Assumption — design.md.)
 async function loadPrefs() {
-  pc.prefs = await API(`/api/onetrust/preferences?email=${encodeURIComponent(pc.subject.email)}`);
+  pc.prefs = await API(`/api/onetrust/preferences?email=${encodeURIComponent(pc.subject.email)}`, { headers: pc.headers });
   const on = (st) => st === "granted" || st === "opt_in";
   const purposes = Object.fromEntries(TAX.purposes.map((p) => [p.code, false]));
   for (const p of pc.prefs.purposes) purposes[p.purposeCode] = on(p.status);
@@ -369,6 +405,42 @@ function signInForm(demo) {
       <div class="actions"><span class="hint">Simulated sign-in: any email you've registered with.</span><button class="btn primary" type="submit">Sign in</button></div>
     </form>`;
 }
+
+// A marketing email as the email platform (SFMC) would send it; its footer links carry a
+// signed token for the recipient, so the settings open without signing in.
+async function emailHtml() {
+  const { recipients } = await API("/api/email/recipients");
+  if (!recipients.some((r) => r.localId === pc.mailTo)) pc.mailTo = recipients[0]?.localId;
+  if (!pc.mailTo) return `<p class="empty">No one to email yet — register on the event or account page first.</p>`;
+  const mail = await API(`/api/email/message?localId=${encodeURIComponent(pc.mailTo)}`);
+  const link = `#/unsubscribe?token=${encodeURIComponent(mail.token)}`;
+  return `
+    <h3 class="pc-title">Inbox</h3>
+    <p class="lead">A marketing email with a preferences link. Pick who received it, then click <b>Manage your preferences</b>.</p>
+    <label class="field mail-to"><span class="label">Recipient</span>
+      <select id="mail-to">${recipients.map((r) =>
+        `<option value="${esc(r.localId)}"${r.localId === pc.mailTo ? " selected" : ""}>${esc(r.name)} · ${esc(r.email)}</option>`).join("")}</select></label>
+    <article class="mail">
+      <header class="mail-head">
+        <div><b>From</b>${esc(mail.from)}</div>
+        <div><b>To</b>${esc(mail.to)}</div>
+        <div><b>Subject</b>${esc(mail.subject)}</div>
+      </header>
+      <div class="mail-body">
+        <h4>Markets this week</h4>
+        <p>The Autumn Budget brought changes to pension allowances and capital gains that will shape conversations with your clients over the coming months.</p>
+        <p>Our investment strategy team has summarised what changed, what didn't, and the questions advisers are asking most. Join the briefing on 29 October for the full picture.</p>
+      </div>
+      <footer class="mail-foot">You're receiving this email because you registered with Vanguard.
+        <a href="${link}">Manage your preferences</a></footer>
+    </article>`;
+}
+
+document.addEventListener("change", (e) => {
+  if (e.target.id !== "mail-to") return;
+  pc.mailTo = e.target.value;
+  route();
+});
 
 document.addEventListener("submit", async (e) => {
   if (e.target.id !== "signin") return;
@@ -546,7 +618,7 @@ document.addEventListener("click", async (e) => {
   if (e.target.id === "pc-save") {
     const { consent, preferences } = changes();
     try {
-      const data = await fetch("/api/preview", { method: "POST", headers: { "Content-Type": "application/json" },
+      const data = await fetch("/api/preview", { method: "POST", headers: { "Content-Type": "application/json", ...pc.headers },
         body: JSON.stringify({ flow: "update", changes: { consent, preferences } }) }).then((r) => r.json());
       pending = { flow: "update", event: data.event };
       $("modal-title").textContent = "Changes CL6 will send to CPMS";
@@ -588,6 +660,155 @@ async function onUpdateSent(event) {
     renderEditor();
   }
 }
+
+// ---------- open questions: consent_fanout/<doc>.md, question by question, with comments
+// Renders the markdown subset those files use: paragraphs, nested -/1. lists, ``` blocks,
+// **bold**, *italic*, `code` and [links](url).
+const inline = (s) => esc(s)
+  .replace(/`([^`]+)`/g, "<code>$1</code>")
+  .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+  .replace(/\*(.+?)\*/g, "<i>$1</i>")
+  .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+const indentOf = (l) => l.match(/^ */)[0].length;
+const LIST_ITEM = /^( *)([-*]|\d+\.) +(.*)$/;
+function md(src) {
+  const lines = src.split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length;) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+    if (line.trim().startsWith("```")) {
+      const code = [];
+      for (i++; i < lines.length && !lines[i].trim().startsWith("```"); i++) code.push(lines[i]);
+      i++;
+      out.push(`<pre class="code">${esc(code.join("\n"))}</pre>`);
+      continue;
+    }
+    const first = line.match(LIST_ITEM);
+    if (first && !first[1]) {
+      const ordered = /\d/.test(first[2]);
+      const items = [];
+      let m;
+      while (i < lines.length && (m = lines[i].match(LIST_ITEM)) && !m[1] && /\d/.test(m[2]) === ordered) {
+        const pad = m[2].length + 1 + (m[0].length - m[0].trimStart().length);
+        const body = [m[3]];
+        for (i++; i < lines.length && (!lines[i].trim() || indentOf(lines[i]) >= pad); i++) body.push(lines[i].slice(pad));
+        items.push(`<li>${md(body.join("\n"))}</li>`);
+      }
+      out.push(ordered ? `<ol start="${parseInt(first[2], 10)}">${items.join("")}</ol>` : `<ul>${items.join("")}</ul>`);
+      continue;
+    }
+    const para = [];
+    const why = (l) => l.trim().startsWith("*Why:*"); // the "Why" behind each question gets its own paragraph
+    for (; i < lines.length && lines[i].trim() && !lines[i].trim().startsWith("```") && !LIST_ITEM.test(lines[i]) && !(para.length && why(lines[i])); i++) para.push(lines[i].trim());
+    out.push(`<p${why(para[0]) ? ' class="why"' : ""}>${inline(para.join(" "))}</p>`);
+  }
+  return out.join("");
+}
+
+const qs = { doc: null, data: null, open: {}, error: "" };
+const AUTHOR_KEY = "cpms-question-author";
+const savedAuthor = () => { try { return localStorage.getItem(AUTHOR_KEY) || ""; } catch { return ""; } };
+const saveAuthor = (name) => { try { localStorage.setItem(AUTHOR_KEY, name); } catch { /* storage blocked: just don't remember */ } };
+const when = (iso) => new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+
+async function openQuestions(doc) {
+  if (qs.doc !== doc) Object.assign(qs, { doc, data: null, open: {}, error: "" });
+  $("q-title").textContent = doc || "Open questions";
+  $("q-lead").textContent = "";
+  renderQuestions();
+  try {
+    qs.data = await API(`/api/questions/${encodeURIComponent(doc)}`);
+  } catch (err) {
+    qs.error = err.message;
+  }
+  renderQuestions();
+}
+
+function renderQuestions() {
+  const body = $("q-body");
+  if (qs.error) { body.innerHTML = `<div class="card"><div class="callout err">${esc(qs.error)}</div></div>`; return; }
+  if (!qs.data) { body.innerHTML = `<div class="card"><p class="empty">Loading questions…</p></div>`; return; }
+  const { title, intro, sections, questions, comments } = qs.data;
+  $("q-title").textContent = title;
+  $("q-lead").textContent = intro;
+  const byQuestion = (n) => comments.filter((c) => c.question === n);
+  let group = null;
+  const cards = questions.map((q) => {
+    const head = q.group !== group ? `<h2 class="q-group">${esc((group = q.group))}</h2>` : "";
+    const list = byQuestion(q.n);
+    return `${head}<article class="card q-card" id="q-${q.n}">
+      <div class="q-head"><span class="q-num">Q${q.n}</span>
+        <button class="btn ghost small q-toggle" type="button" data-q="${q.n}">${list.length ? `${list.length} comment${list.length > 1 ? "s" : ""}` : "Comment"}</button></div>
+      <div class="md">${md(q.markdown)}</div>
+      ${qs.open[q.n] || list.length ? commentsHtml(q.n, list) : ""}
+    </article>`;
+  }).join("");
+  body.innerHTML = `<div class="card q-intro">${sections.map((s, i) =>
+    `<details${i === 0 ? " open" : ""}><summary>${esc(s.title)}</summary><div class="md">${md(s.markdown)}</div></details>`).join("")}</div>
+    <p class="q-source">Source: <code>consent_fanout/${esc(qs.doc)}.md</code> · comments saved to <code>consent_fanout/comments/${esc(qs.doc)}.json</code></p>
+    ${cards}`;
+}
+
+function commentsHtml(n, list) {
+  return `<div class="comments">
+    ${list.map((c) => `<div class="comment">
+      <div class="comment-meta"><b>${esc(c.author)}</b><span>${esc(when(c.at))}</span>
+        <button class="link-btn" type="button" data-delete="${esc(c.id)}" aria-label="Delete comment">Delete</button></div>
+      <div class="comment-text">${esc(c.text).replace(/\n/g, "<br>")}</div>
+    </div>`).join("")}
+    ${qs.open[n] ? `<form class="comment-form" data-q="${n}">
+      <input name="author" placeholder="Your name" value="${esc(savedAuthor())}" maxlength="80">
+      <textarea name="text" rows="3" placeholder="Answer, decision or follow-up…" maxlength="4000" required></textarea>
+      <div class="actions"><span class="error" data-error="comment"></span>
+        <button class="btn ghost small" type="button" data-cancel="${n}">Cancel</button>
+        <button class="btn primary small" type="submit">Add comment</button></div>
+    </form>` : `<button class="link-btn" type="button" data-q="${n}">+ Add comment</button>`}
+  </div>`;
+}
+
+$("q-body").addEventListener("click", async (e) => {
+  const open = e.target.closest("[data-q]:not(form)");
+  const cancel = e.target.closest("[data-cancel]");
+  const del = e.target.closest("[data-delete]");
+  if (open) {
+    qs.open[open.dataset.q] = true;
+    renderQuestions();
+    document.querySelector(`.comment-form[data-q="${open.dataset.q}"] textarea`)?.focus();
+  } else if (cancel) {
+    delete qs.open[cancel.dataset.cancel];
+    renderQuestions();
+  } else if (del) {
+    try {
+      ({ comments: qs.data.comments } = await API(`/api/questions/${encodeURIComponent(qs.doc)}/comments/${encodeURIComponent(del.dataset.delete)}`, { method: "DELETE" }));
+    } catch (err) {
+      qs.error = err.message;
+    }
+    renderQuestions();
+  }
+});
+
+$("q-body").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const n = Number(form.dataset.q);
+  const author = form.author.value.trim();
+  const text = form.text.value.trim();
+  const error = form.querySelector('[data-error="comment"]');
+  if (!text) { error.textContent = "Write a comment first."; return; }
+  saveAuthor(author);
+  form.querySelector("[type=submit]").disabled = true;
+  try {
+    ({ comments: qs.data.comments } = await API(`/api/questions/${encodeURIComponent(qs.doc)}/comments`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: n, author, text }),
+    }));
+    delete qs.open[n];
+    renderQuestions();
+  } catch (err) {
+    error.textContent = err.message;
+    form.querySelector("[type=submit]").disabled = false;
+  }
+});
 
 await loadConfig();
 route();

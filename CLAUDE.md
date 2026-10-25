@@ -35,10 +35,11 @@ lives at root.
   build OneTrust payload → enqueue), the taxonomy reference/cache, and success/fail
   recording. This is the flow designed so far.
 
-- *(planned, not yet started)* **consent update fanout** — everything that needs to
-  happen when an update is triggered/confirmed inside OneTrust (e.g. notifying other
-  downstream systems). Will get its own folder with the same `design.md` /
-  `building_blocks.md` / `schemas/` structure when work starts.
+- *(discovery)* **`consent_fanout/`** — getting OneTrust consent updates into downstream
+  systems (SFMC, Dynamics CRM, AEP, Marketo), preferably through OneTrust's own
+  integrations rather than code we build. For now it holds one questions file per target
+  system (e.g. `SFMC.md`); `design.md` / `building_blocks.md` / `schemas/` get added once
+  the route for each system is decided.
 
 ## What's inside a flow folder
 
@@ -100,6 +101,10 @@ lives at root.
 
 Local Node.js app with three flows in a left sidebar: **Event registration** (EMO),
 **Account registration** (CL6 / Vanguard 365) and **Preference centre** (signed-in user).
+Below them, **Open questions** shows each `consent_fanout/<doc>.md` (so far `SFMC`) question
+by question, read live from the file, with comments saved to
+`consent_fanout/comments/<doc>.json`. To add a file, add its name to `QUESTION_DOCS` in
+`server.js` and a sidebar link in `public/index.html`.
 
 **Start it:**
 
