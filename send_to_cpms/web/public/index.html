@@ -64,6 +64,10 @@
           <span>AEP Connector<small>OneTrust → AEP · access token</small></span>
         </a>
       </details>
+      <details class="side-group">
+        <summary class="side-label">Schematics</summary>
+        <div id="schematic-links" class="side-group-links"></div>
+      </details>
     </nav>
     <div class="side-foot"><span class="env-pill">Test harness · dev</span></div>
   </aside>
@@ -110,6 +114,15 @@
       </div>
     </section>
 
+    <!-- Schematics header -->
+    <section class="hero" data-flow="schematics" hidden>
+      <div class="hero-inner">
+        <span class="eyebrow">Schematics</span>
+        <h1 id="s-title">Loading…</h1>
+        <p class="hero-lead" id="s-lead"></p>
+      </div>
+    </section>
+
     <!-- OneTrust Connectors header -->
     <section class="hero" data-flow="connectors" hidden>
       <div class="hero-inner">
@@ -130,6 +143,9 @@
     <main class="wrap">
       <!-- ===== Open questions (consent_fanout/<doc>.md) ===== -->
       <div data-flow="questions" hidden id="q-body"></div>
+
+      <!-- ===== Schematics (<flow>/diagrams/*.drawio) ===== -->
+      <div data-flow="schematics" hidden><div class="card schematic" id="s-body"></div></div>
 
       <!-- ===== OneTrust Connectors (consent_fanout/connectors/<doc>.md) ===== -->
       <div data-flow="connectors" hidden><div class="card md doc" id="c-body"></div></div>

@@ -60,7 +60,7 @@ lives at root.
   enforcement can't drift apart.
 
 - **`diagrams/`** — `.drawio` architecture diagrams for that flow (e.g.
-  `architecture.drawio` in `send_to_cpms/`), editable in draw.io/diagrams.net. Visual
+  `Send_To_OneTrust.drawio` in `send_to_cpms/`), editable in draw.io/diagrams.net. Visual
   companion to `design.md`, not a replacement — rationale still lives in the doc.
 
 - **`README.md`** (root) — placeholder, not yet written up.

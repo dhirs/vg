@@ -41,8 +41,9 @@ async function loadConfig() {
        <span><b>${esc(c.label)}</b><small>${esc(c.description)}</small></span></label>`).join("");
 }
 
-// ---------- routing: #/event, #/account, #/unsubscribe[?token=…], #/preferences[?localId=…], #/questions/<doc>, #/connectors/<doc>
-const PAGES = [...FLOWS, "unsubscribe", "preferences", "questions", "connectors"];
+// ---------- routing: #/event, #/account, #/unsubscribe[?token=…], #/preferences[?localId=…], #/questions/<doc>,
+// #/connectors/<doc>, #/schematics/<id>
+const PAGES = [...FLOWS, "unsubscribe", "preferences", "questions", "connectors", "schematics"];
 function route() {
   const [path, query = ""] = location.hash.replace(/^#\//, "").split("?");
   const [page, doc] = path.split("/");
@@ -56,6 +57,7 @@ function route() {
   document.querySelector(".side-link.active")?.closest("details.side-group")?.setAttribute("open", "");
   if (flow === "questions") return openQuestions(doc);
   if (flow === "connectors") return openConnector(doc);
+  if (flow === "schematics") return openSchematic(doc);
   const params = new URLSearchParams(query);
   if (flow === "preferences") return preferenceCentre({ mode: "portal", localId: params.get("localId") });
   if (flow === "unsubscribe") return preferenceCentre({ mode: "unsubscribe", token: params.get("token") });
@@ -724,6 +726,48 @@ function md(src) {
   return out.join("");
 }
 
+// ---------- Schematics: every <flow>/diagrams/*.drawio, drawn by the diagrams.net viewer.
+// The diagram XML stays in the page — the viewer script draws it here, nothing is uploaded.
+const ICON_DIAGRAM = '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="6" rx="1"/><rect x="14" y="15" width="7" height="6" rx="1"/><path d="M6.5 9v4a2 2 0 0 0 2 2H14"/></svg>';
+async function loadSchematicLinks() {
+  try {
+    const { schematics } = await API("/api/schematics");
+    $("schematic-links").innerHTML = schematics.map((s) => `
+      <a href="#/schematics/${encodeURIComponent(s.id)}" class="side-link" data-flow="schematics" data-doc="${esc(s.id)}">
+        ${ICON_DIAGRAM}<span>${esc(s.name)}<small>${esc(s.flow)}</small></span></a>`).join("")
+      || `<p class="side-empty">No diagrams yet.</p>`;
+  } catch (err) {
+    $("schematic-links").innerHTML = `<p class="side-empty">${esc(err.message)}</p>`;
+  }
+}
+
+let viewerScript = null;
+const loadViewer = () => (viewerScript ||= new Promise((resolve, reject) => {
+  const script = document.createElement("script");
+  script.src = "https://viewer.diagrams.net/js/viewer-static.min.js";
+  script.onload = resolve;
+  script.onerror = () => { viewerScript = null; reject(new Error("Couldn't load the diagrams.net viewer — check the internet connection.")); };
+  document.head.appendChild(script);
+}));
+
+async function openSchematic(id) {
+  $("s-title").textContent = "Loading…";
+  $("s-lead").textContent = "";
+  $("s-body").innerHTML = `<p class="empty">Loading diagram…</p>`;
+  try {
+    const [diagram] = await Promise.all([API(`/api/schematics/${encodeURIComponent(id)}`), loadViewer()]);
+    $("s-title").textContent = diagram.name;
+    $("s-lead").textContent = diagram.title;
+    $("s-body").innerHTML = `<div class="schematic-canvas"></div>
+      <p class="q-source">Source: <code>${esc(diagram.file)}</code> · edit it in draw.io / diagrams.net</p>`;
+    const canvas = $("s-body").querySelector(".schematic-canvas");
+    canvas.dataset.mxgraph = JSON.stringify({ xml: diagram.xml, nav: true, resize: true, tooltips: true, toolbar: "zoom layers lightbox", "toolbar-nohide": true });
+    window.GraphViewer.createViewerForElement(canvas);
+  } catch (err) {
+    $("s-body").innerHTML = `<div class="callout err">${esc(err.message)}</div>`;
+  }
+}
+
 // ---------- OneTrust Connectors: consent_fanout/connectors/<doc>.md as a reference page
 async function openConnector(doc) {
   $("c-title").textContent = doc || "OneTrust Connectors";
@@ -842,4 +886,5 @@ $("q-body").addEventListener("submit", async (e) => {
 });
 
 await loadConfig();
+await loadSchematicLinks(); // before route(), so the current schematic's link can be marked active
 route();

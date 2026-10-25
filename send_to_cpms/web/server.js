@@ -20,7 +20,7 @@
 //
 // Usage: cd send_to_cpms/web && npm install && npm start   ->   http://localhost:8600
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -470,6 +470,48 @@ app.get("/api/onetrust/preferences", async (req, res) => {
 const QUESTIONS_DIR = join(HERE, "../../consent_fanout");
 const QUESTION_DOCS = ["SFMC", "AEP"];
 const commentsFile = (doc) => join(QUESTIONS_DIR, "comments", `${doc}.json`);
+
+// --- Schematics: every <flow>/diagrams/*.drawio in the repo, found on each request so a new
+// diagram shows up without code changes. The XML is drawn in the browser by the diagrams.net
+// viewer, as diagrams/preview.py does.
+// Known diagrams in pipeline order, with their sidebar names; any other diagram follows,
+// named after its file.
+const SCHEMATIC_ORDER = [
+  { file: "send_to_cpms/diagrams/Send_To_OneTrust.drawio", label: "Send_To_OneTrust" },
+  { file: "consent_fanout/diagrams/OT_to_SFMC.drawio", label: "OT to SFMC" },
+];
+const decodeEntities = (s) => s.replace(/&amp;/g, "&").replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+  .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"');
+function schematics() {
+  const found = [];
+  for (const flow of readdirSync(REPO_ROOT, { withFileTypes: true })) {
+    if (!flow.isDirectory() || flow.name.startsWith(".")) continue;
+    const dir = join(REPO_ROOT, flow.name, "diagrams");
+    if (!existsSync(dir)) continue;
+    for (const file of readdirSync(dir).filter((f) => f.endsWith(".drawio")).sort()) {
+      const xml = readFileSync(join(dir, file), "utf8");
+      // the diagram's own title cell, e.g. "send_to_cpms — source triggers → OneTrust"
+      const raw = xml.match(/id="title"[^>]*\svalue="([^"]*)"/)?.[1] || "";
+      const title = decodeEntities(decodeEntities(raw)).replace(/<[^>]+>/g, "").trim();
+      const path = `${flow.name}/diagrams/${file}`;
+      found.push({ id: `${flow.name}--${file.replace(/\.drawio$/, "")}`, flow: flow.name,
+        name: SCHEMATIC_ORDER.find((k) => k.file === path)?.label || file.replace(/\.drawio$/, ""),
+        file: path, title: title || file, xml });
+    }
+  }
+  const rank = (s) => { const i = SCHEMATIC_ORDER.findIndex((k) => k.file === s.file); return i < 0 ? SCHEMATIC_ORDER.length : i; };
+  return found.sort((a, b) => rank(a) - rank(b));
+}
+
+app.get("/api/schematics", (req, res) => {
+  res.json({ schematics: schematics().map(({ xml, ...rest }) => rest) });
+});
+
+app.get("/api/schematics/:id", (req, res) => {
+  const found = schematics().find((s) => s.id === req.params.id);
+  if (!found) return res.status(404).json({ errors: [`No diagram "${req.params.id}".`] });
+  res.json(found);
+});
 
 // --- OneTrust Connectors: consent_fanout/connectors/<doc>.md shown as a reference page.
 const CONNECTOR_DOCS = ["AEP"];
