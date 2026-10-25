@@ -9,6 +9,40 @@ browser ──HTTPS + basic auth──▶ nginx ──▶ 127.0.0.1:8600  node s
 GitHub Action ──SSH (user deploy)──▶ rsync files → npm ci → restart cpms-web
 ```
 
+## Current install — already done (2026-10-25)
+
+**All steps below (0–11) have been carried out on the Hetzner server. Don't re-run them** —
+pushes to `main` now deploy on their own. This section records what is there.
+
+| What | Value |
+|---|---|
+| Server | Hetzner, Ubuntu 24.04, public IP `178.104.222.67`, SSH on port 22 |
+| URL | <https://cpms.178-104-222-67.sslip.io> — no domain was bought; [sslip.io](https://sslip.io) is free wildcard DNS that resolves `*.178-104-222-67.sslip.io` to that IP, and Let's Encrypt issues normal certs for it |
+| Login | basic auth (credentials held by the owner — not in the repo) |
+| Repo clone on server | `~/vg` (user `gdev`, cloned over SSH). Used only for the Step 5 first copy; deploys come from GitHub, not from this clone |
+| App | `/opt/cpms/app`, systemd `cpms-web`, user `cpms`, `127.0.0.1:8600`, Node v22 at `/usr/bin/node` |
+| Settings | `/etc/cpms/cpms-web.env` — `AWS_DEFAULT_REGION=ap-south-1`, `COOKIE_SECURE=1` (HTTPS is on), AWS keys filled in |
+| nginx | `/etc/nginx/sites-available/cpms` (enabled), htpasswd `/etc/nginx/cpms.htpasswd`; certbot added HTTPS + redirect; renewal via `certbot.timer`; Let's Encrypt account email is the owner's |
+| Firewall | ufw already allowed 80/443 — nothing changed |
+| Deploy user | `deploy`, sudoers `/etc/sudoers.d/cpms-deploy` (restart + journalctl only). Action's public key is in `/home/deploy/.ssh/authorized_keys`; the private key was deleted from the server after being stored in GitHub |
+| GitHub `dhirs/vg` | secrets `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS` (`ssh-keyscan 178.104.222.67`), `DEPLOY_HOST=178.104.222.67`, `DEPLOY_USER=deploy`; variables `DEPLOY_PATH=/opt/cpms/app`, `DEPLOY_ENABLED=true`. Set with the `gh` CLI (installed on the server). First manual run of "Deploy web app" passed (`cpms-web is up`) |
+
+Other sites share this server; only the `cpms` nginx site was added — don't change the others.
+Port 8600 was free; pick another if you add services.
+
+**Follow-ups still open:**
+- The workflow warns that `actions/checkout@v4` targets the deprecated Node 20 runtime;
+  bump it when a newer major is out.
+
+**Gotchas hit during setup (for whoever does this next time):**
+- In Claude Code, `!` commands don't get a real terminal — `sudo nano` and plain
+  `htpasswd -c` (password prompt) fail. Use your own SSH session, or the non-interactive
+  forms (`sed -i` for the env file, `htpasswd -b`).
+- Long one-line commands pasted from a chat can get wrapped onto two lines. That broke the
+  Step 7 sudoers line (`--no-pager` landed on its own line → syntax error, which can break
+  `sudo` entirely). Safer: write the sudoers line to a temp file, `visudo -cf` it, then
+  `sudo install -m 440 -o root -g root <file> /etc/sudoers.d/cpms-deploy`.
+
 > **If you are an AI assistant carrying this out:** work through the steps in order, checking
 > each one before moving on. Ask the user for the values in **Step 0**. **Never print, store or
 > type secrets yourself** — AWS keys, passwords and the SSH private key are entered or copied by
