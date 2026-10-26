@@ -10,7 +10,8 @@
 // The browser never sees AWS credentials — they're read here from the repo-root .env.prod when
 // it exists (local use), otherwise from environment variables (the server, via systemd); with no
 // keys at all, the AWS SDK's default credential chain (e.g. AWS_PROFILE) is used.
-// Server settings: PORT, HOST, COOKIE_SECURE=1 behind HTTPS — see INSTALL.md.
+// Server settings: PORT, HOST, COOKIE_SECURE=1 behind HTTPS, AUTH_USER + AUTH_PASSWORD for the
+// login page (required behind HTTPS) — see INSTALL.md.
 //
 // Updating consent — neither page shows or edits settings; both identify the person, ask OneTrust
 // for that person's magic link, and redirect to OneTrust's preference centre, where the change is
@@ -27,7 +28,7 @@
 // consent_fanout/ and each flow's diagrams/.
 //
 // Usage: cd send_to_cpms/web && npm install && npm start   ->   http://localhost:8600
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -230,11 +231,15 @@ function loadEnv(path) {
 // .env.prod (if present) first, then real environment variables win — on the server there's no file.
 // Region and bucket are required. Keys are optional: without them the AWS SDK's normal credential
 // chain is used (AWS_PROFILE / SSO / environment), so a local install needs no stored keys.
-const ENV_KEYS = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION", "AWS_BUCKET_NAME"];
+const ENV_KEYS = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION", "AWS_BUCKET_NAME", "AUTH_USER", "AUTH_PASSWORD"];
 const env = { ...loadEnv(join(REPO_ROOT, ".env.prod")),
   ...Object.fromEntries(ENV_KEYS.filter((k) => process.env[k]).map((k) => [k, process.env[k]])) };
 const missing = ["AWS_DEFAULT_REGION", "AWS_BUCKET_NAME"].filter((k) => !env[k]);
 if (Boolean(env.AWS_ACCESS_KEY_ID) !== Boolean(env.AWS_SECRET_ACCESS_KEY)) missing.push("AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (both or neither)");
+// App login: on when AUTH_USER + AUTH_PASSWORD are set (.env.prod locally). Required behind
+// HTTPS (the server), so the site can't end up public by accident; optional locally.
+if (Boolean(env.AUTH_USER) !== Boolean(env.AUTH_PASSWORD)) missing.push("AUTH_USER + AUTH_PASSWORD (both or neither)");
+else if (process.env.COOKIE_SECURE === "1" && !env.AUTH_USER) missing.push("AUTH_USER + AUTH_PASSWORD (required on the server — see INSTALL.md)");
 if (missing.length) {
   console.error(`Missing settings: ${missing.join(", ")} — set them in .env.prod (local) or the environment (server).`);
   process.exit(1);
@@ -321,8 +326,70 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const cookie = (req, name) => (req.headers.cookie || "").split(";").map((c) => c.trim().split("=")).find(([k]) => k === name)?.[1];
 const sessionOf = (req) => sessions.get(cookie(req, "cpms_session"));
 
+// --- App login (replaces nginx basic auth, which corporate browsers and proxies often block).
+// One user + password from the settings. The session is a signed cookie (user + expiry + HMAC),
+// so restarts don't log anyone out; its key is derived from the password, so changing the
+// password logs everyone out.
+const AUTH = env.AUTH_USER ? { user: env.AUTH_USER, password: env.AUTH_PASSWORD } : null;
+const AUTH_COOKIE = "cpms_auth";
+const AUTH_TTL_MS = 7 * 24 * 3600 * 1000;
+const AUTH_PUBLIC = new Set(["/login.html", "/styles.css", "/vanguard-logo.svg", "/api/auth/login", "/api/auth/me"]);
+const authKey = AUTH && createHash("sha256").update(`cpms-auth-cookie:${AUTH.password}`).digest();
+const sign = (payload) => createHmac("sha256", authKey).update(payload).digest("base64url");
+function authCookie(user) {
+  const payload = `${Buffer.from(user).toString("base64url")}.${Date.now() + AUTH_TTL_MS}`;
+  return `${payload}.${sign(payload)}`;
+}
+function authedUser(req) {
+  const [user, expires, mac] = String(cookie(req, AUTH_COOKIE) || "").split(".");
+  if (!mac || Number(expires) < Date.now()) return null;
+  const expected = Buffer.from(sign(`${user}.${expires}`));
+  if (expected.length !== Buffer.from(mac).length || !timingSafeEqual(expected, Buffer.from(mac))) return null;
+  return Buffer.from(user, "base64url").toString("utf8");
+}
+// Compared as SHA-256 digests so the comparison is constant-time whatever the lengths.
+const digest = (s) => createHash("sha256").update(String(s)).digest();
+const passwordMatches = (password) => timingSafeEqual(digest(password), digest(AUTH.password));
+// Failed logins per client IP (nginx passes it in X-Real-IP): 10 per 15 minutes, then 429.
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const loginFailures = new Map(); // ip -> { count, since }
+const clientIp = (req) => req.headers["x-real-ip"] || req.socket.remoteAddress;
+
 const app = express();
 app.use(express.json({ limit: "256kb" }));
+
+app.get("/api/auth/me", (req, res) => res.json({ enabled: Boolean(AUTH), user: AUTH ? authedUser(req) : null }));
+
+app.post("/api/auth/login", (req, res) => {
+  if (!AUTH) return res.json({ user: null });
+  const ip = clientIp(req);
+  const failures = loginFailures.get(ip);
+  if (failures && Date.now() - failures.since > LOGIN_WINDOW_MS) loginFailures.delete(ip);
+  if ((loginFailures.get(ip)?.count || 0) >= 10) return res.status(429).json({ errors: ["Too many attempts. Try again in 15 minutes."] });
+  const { user, password } = req.body || {};
+  const ok = String(user || "") === AUTH.user && passwordMatches(password);
+  if (!ok) {
+    const f = loginFailures.get(ip) || { count: 0, since: Date.now() };
+    loginFailures.set(ip, { ...f, count: f.count + 1 });
+    return res.status(401).json({ errors: ["Wrong username or password."] });
+  }
+  loginFailures.delete(ip);
+  res.setHeader("Set-Cookie", `${AUTH_COOKIE}=${authCookie(AUTH.user)}; ${COOKIE_FLAGS}; Max-Age=${AUTH_TTL_MS / 1000}`);
+  res.json({ user: AUTH.user });
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  res.setHeader("Set-Cookie", `${AUTH_COOKIE}=; ${COOKIE_FLAGS}; Max-Age=0`);
+  res.json({ user: null });
+});
+
+// Everything else needs the login: pages redirect to it, API calls get 401.
+app.use((req, res, next) => {
+  if (!AUTH || AUTH_PUBLIC.has(req.path) || authedUser(req)) return next();
+  if (req.path.startsWith("/api/")) return res.status(401).json({ errors: ["Sign in first."] });
+  res.redirect(302, "/login.html");
+});
+
 app.use(express.static(join(HERE, "public")));
 
 app.get("/api/config", (req, res) => res.json({ event: EVENT, firmSizes: FIRM_SIZES, companyTypes: COMPANY_TYPES, bus: BUS_NAME }));

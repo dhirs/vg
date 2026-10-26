@@ -5,7 +5,7 @@ this, every push to `main` deploys automatically through the GitHub Action
 `.github/workflows/deploy-web.yml`.
 
 ```
-browser ──HTTPS + basic auth──▶ nginx ──▶ 127.0.0.1:8600  node server.js  (systemd: cpms-web, user cpms)
+browser ──HTTPS──▶ nginx ──▶ 127.0.0.1:8600  node server.js, own login page  (systemd: cpms-web, user cpms)
 GitHub Action ──SSH (user deploy)──▶ rsync files → npm ci → restart cpms-web
 ```
 
@@ -18,11 +18,11 @@ pushes to `main` now deploy on their own. This section records what is there.
 |---|---|
 | Server | Hetzner, Ubuntu 24.04, public IP `178.104.222.67`, SSH on port 22 |
 | URL | <https://cpms.178-104-222-67.sslip.io> — no domain was bought; [sslip.io](https://sslip.io) is free wildcard DNS that resolves `*.178-104-222-67.sslip.io` to that IP, and Let's Encrypt issues normal certs for it |
-| Login | basic auth (credentials held by the owner — not in the repo) |
+| Login | the app's own login page — `AUTH_USER` + `AUTH_PASSWORD` in the settings file (not in the repo). Replaced nginx basic auth, which work laptops blocked — see **Switched from basic auth to the app login** |
 | Repo clone on server | `~/vg` (user `gdev`, cloned over SSH). Used only for the Step 5 first copy; deploys come from GitHub, not from this clone |
 | App | `/opt/cpms/app`, systemd `cpms-web`, user `cpms`, `127.0.0.1:8600`, Node v22 at `/usr/bin/node` |
 | Settings | `/etc/cpms/cpms-web.env` — `AWS_DEFAULT_REGION=ap-south-1`, `COOKIE_SECURE=1` (HTTPS is on), AWS keys filled in |
-| nginx | `/etc/nginx/sites-available/cpms` (enabled), htpasswd `/etc/nginx/cpms.htpasswd`; certbot added HTTPS + redirect; renewal via `certbot.timer`; Let's Encrypt account email is the owner's |
+| nginx | `/etc/nginx/sites-available/cpms` (enabled), no basic auth; certbot added HTTPS + redirect; renewal via `certbot.timer`; Let's Encrypt account email is the owner's |
 | Firewall | ufw already allowed 80/443 — nothing changed |
 | Deploy user | `deploy`, sudoers `/etc/sudoers.d/cpms-deploy` (restart + journalctl only). Action's public key is in `/home/deploy/.ssh/authorized_keys`; the private key was deleted from the server after being stored in GitHub |
 | GitHub `dhirs/vg` | secrets `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS` (`ssh-keyscan 178.104.222.67`), `DEPLOY_HOST=178.104.222.67`, `DEPLOY_USER=deploy`; variables `DEPLOY_PATH=/opt/cpms/app`, `DEPLOY_ENABLED=true`. Set with the `gh` CLI (installed on the server). First manual run of "Deploy web app" passed (`cpms-web is up`) |
@@ -30,14 +30,28 @@ pushes to `main` now deploy on their own. This section records what is there.
 Other sites share this server; only the `cpms` nginx site was added — don't change the others.
 Port 8600 was free; pick another if you add services.
 
+## Switched from basic auth to the app login (2026-10-26)
+
+Work laptops never showed nginx's basic-auth prompt (just a 401), so the app got its own login
+page. Done on the server, in this order — the app refuses to start behind HTTPS without a login,
+so the settings had to be there before the code was deployed:
+
+1. Backups: `/etc/cpms/cpms-web.env.bak`, `/root/cpms-nginx.bak`.
+2. `AUTH_USER` and `AUTH_PASSWORD` appended to `/etc/cpms/cpms-web.env`.
+3. Pushed to `main`; the Action deployed the version with `/login.html`.
+4. Basic auth removed from the `cpms` nginx site only (`sudo sed -i '/auth_basic/d'
+   /etc/nginx/sites-available/cpms`, `nginx -t`, reload); `/etc/nginx/cpms.htpasswd` deleted.
+
 **Follow-ups still open:**
 - The workflow warns that `actions/checkout@v4` targets the deprecated Node 20 runtime;
   bump it when a newer major is out.
 
 **Gotchas hit during setup (for whoever does this next time):**
-- In Claude Code, `!` commands don't get a real terminal — `sudo nano` and plain
-  `htpasswd -c` (password prompt) fail. Use your own SSH session, or the non-interactive
-  forms (`sed -i` for the env file, `htpasswd -b`).
+- In Claude Code, `!` commands don't get a real terminal — `sudo nano` and password prompts
+  (`htpasswd -c`) fail. Use your own SSH session, or the non-interactive
+  forms (`sed -i` for the env file).
+- Some work laptops never show nginx's basic-auth prompt (corporate browser policy or a
+  security proxy) and just get a 401 — why the app now has its own login page.
 - Long one-line commands pasted from a chat can get wrapped onto two lines. That broke the
   Step 7 sudoers line (`--no-pager` landed on its own line → syntax error, which can break
   `sudo` entirely). Safer: write the sudoers line to a temp file, `visudo -cf` it, then
@@ -56,7 +70,7 @@ Port 8600 was free; pick another if you add services.
 |---|---|---|
 | `DOMAIN` | `cpms.example.com` | nginx and the HTTPS certificate — its DNS A/AAAA record must point at this server |
 | `LE_EMAIL` | `you@example.com` | Let's Encrypt expiry notices |
-| `AUTH_USER` | `vanguard` | the basic-auth login name (the user sets the password) |
+| `AUTH_USER` | `vanguard` | the app's login name (the user sets the password — Step 8) |
 | `AWS_DEFAULT_REGION` | `eu-west-2` | the region of `cpms-eventbus-consent` |
 | `AWS_BUCKET_NAME` | `my-project-bucket` | the bucket holding `cpms/success/` and `cpms/fail/` |
 | `REPO_DIR` | `~/vg` | where this repo is cloned on the server (needed once, for the first copy) |
@@ -120,6 +134,7 @@ AWS_BUCKET_NAME=$AWS_BUCKET_NAME
 PORT=8600
 HOST=127.0.0.1
 COOKIE_SECURE=0
+AUTH_USER=$AUTH_USER
 EOF
 sudo chown root:cpms /etc/cpms/cpms-web.env
 sudo chmod 640 /etc/cpms/cpms-web.env
@@ -174,24 +189,23 @@ sudo visudo -cf /etc/sudoers.d/cpms-deploy                 # must say "parsed OK
 The workflow calls `/usr/bin/systemctl` and `/usr/bin/journalctl`. If `command -v` shows other
 paths, tell the user — the workflow's two `sudo -n` lines must match.
 
-## Step 8 — nginx with basic auth
+## Step 8 — the app's login, then nginx
+
+The app has its own login page (not nginx basic auth, which corporate browsers and proxies often
+block). **The user** sets the password in the settings file (Step 4 already added `AUTH_USER`):
+
+```bash
+sudo nano /etc/cpms/cpms-web.env      # add a line AUTH_PASSWORD=<the password>, save
+sudo grep -c '^AUTH_' /etc/cpms/cpms-web.env      # 2 (AUTH_USER, AUTH_PASSWORD)
+sudo systemctl restart cpms-web
+```
 
 ```bash
 sudo cp /opt/cpms/app/send_to_cpms/web/hosting/nginx-cpms.conf /etc/nginx/sites-available/cpms
 sudo sed -i "s/cpms.example.com/$DOMAIN/g" /etc/nginx/sites-available/cpms
 sudo ln -sf /etc/nginx/sites-available/cpms /etc/nginx/sites-enabled/cpms
-```
-
-**The user** creates the login (they type the password; repeat without `-c` to add more users):
-
-```bash
-sudo htpasswd -c /etc/nginx/cpms.htpasswd "$AUTH_USER"
-```
-
-```bash
-sudo chown root:www-data /etc/nginx/cpms.htpasswd && sudo chmod 640 /etc/nginx/cpms.htpasswd
 sudo nginx -t && sudo systemctl reload nginx
-curl -s -o /dev/null -w "%{http_code}\n" "http://$DOMAIN/"   # 401 (password required)
+curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" "http://$DOMAIN/"   # 302 …/login.html
 ```
 
 ## Step 9 — HTTPS
@@ -202,11 +216,11 @@ Ask the user before running — it agrees to Let's Encrypt's terms:
 sudo certbot --nginx -d "$DOMAIN" -m "$LE_EMAIL" --agree-tos --redirect --non-interactive
 sudo sed -i 's/^COOKIE_SECURE=.*/COOKIE_SECURE=1/' /etc/cpms/cpms-web.env
 sudo systemctl restart cpms-web
-curl -s -o /dev/null -w "%{http_code}\n" "https://$DOMAIN/"   # 401
+curl -s -o /dev/null -w "%{http_code}\n" "https://$DOMAIN/"   # 302 (to the login page)
 systemctl list-timers | grep -i certbot                         # renewal is scheduled
 ```
 
-The user then checks `https://DOMAIN` in a browser: login prompt, then the app.
+The user then checks `https://DOMAIN` in a browser: the login page, then the app.
 
 ## Step 10 — Firewall
 
@@ -254,7 +268,9 @@ Test: GitHub → **Actions → Deploy web app → Run workflow**. It should end 
   `diagrams` or `consent_fanout`), or run the workflow by hand.
 - **Logs:** `sudo journalctl -u cpms-web -f`
 - **Restart:** `sudo systemctl restart cpms-web`
-- **Add a login:** `sudo htpasswd /etc/nginx/cpms.htpasswd <name>`
+- **Change the password:** edit the `AUTH_PASSWORD` line in `/etc/cpms/cpms-web.env`, restart
+  (everyone is signed out).
+  There's one login (`AUTH_USER`); everyone shares it.
 - **Server-owned data** (never overwritten by deploys): `/opt/cpms/app/send_to_cpms/web/data/`
   (stub CRM / Marketo — contains email addresses — and the `ref` key) and
   `/opt/cpms/app/consent_fanout/comments/`. Back these up.

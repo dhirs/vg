@@ -44,7 +44,7 @@ async function loadConfig() {
 // ---------- routing: #/event, #/account, #/unsubscribe[?ref=…], #/oneclick, #/preferences[?localId=…], #/onetrust?token=…,
 // #/router/<doc>, #/questions/<doc>, #/connectors/<doc>, #/schematics/<id>
 const PAGES = [...FLOWS, "unsubscribe", "oneclick", "preferences", "onetrust", "router", "questions", "connectors", "schematics"];
-function route() {
+function route(e) {
   const [path, query = ""] = location.hash.replace(/^#\//, "").split("?");
   const [page, doc] = path.split("/");
   flow = PAGES.includes(page) ? page : "event";
@@ -53,8 +53,9 @@ function route() {
     if (el.classList.contains("side-link")) el.classList.toggle("active", flows.includes(flow) && (!el.dataset.doc || el.dataset.doc === doc));
     else el.hidden = !flows.includes(flow);
   });
-  // a collapsed sidebar section opens when you're on one of its pages, so the active link shows
-  document.querySelector(".side-link.active")?.closest("details.side-group")?.setAttribute("open", "");
+  // every sidebar section starts closed; after that, navigating opens the section of the page
+  // you're on, so the active link shows
+  if (e) document.querySelector(".side-link.active")?.closest("details.side-group")?.setAttribute("open", "");
   if (flow === "questions") return openQuestions(doc);
   if (flow === "connectors") return openConnector(doc);
   if (flow === "router") return openRouterDoc(doc);
@@ -852,6 +853,19 @@ $("q-body").addEventListener("submit", async (e) => {
   }
 });
 
+// App login (only when the server has one configured): show who's signed in and a way out.
+async function loadAuth() {
+  const me = await API("/api/auth/me");
+  if (!me.enabled) return;
+  $("app-signout").hidden = false;
+  $("app-signout").title = `Signed in as ${me.user}`;
+}
+$("app-signout").addEventListener("click", async () => {
+  await API("/api/auth/logout", { method: "POST" });
+  location.replace("/login.html");
+});
+
+await loadAuth();
 await loadConfig();
 await loadSchematicLinks(); // before route(), so the current schematic's link can be marked active
 route();

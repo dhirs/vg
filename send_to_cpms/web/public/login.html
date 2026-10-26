@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPMS Sign In</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <span class="topbar-logo">
+    <img src="vanguard-logo.svg" alt="Vanguard" class="logo-img" onerror="this.hidden = true; this.nextElementSibling.hidden = false">
+    <span class="logo-word" hidden>Vanguard</span>
+  </span>
+  <div class="topbar-title">
+    <span>Consent &amp; Preference Management Service</span>
+    <small>CPMS · test harness</small>
+  </div>
+</header>
+<main class="login-wrap">
+  <form class="card login-card" id="login" novalidate>
+    <h2 class="pc-title">Sign in</h2>
+    <p class="lead">The CPMS test harness is private. Sign in to continue.</p>
+    <label class="field"><span class="label">Username</span>
+      <input name="user" autocomplete="username" required autofocus></label>
+    <label class="field"><span class="label">Password</span>
+      <input name="password" type="password" autocomplete="current-password" required></label>
+    <p class="error" id="login-error" role="alert"></p>
+    <div class="actions"><button class="btn primary" type="submit">Sign in</button></div>
+  </form>
+</main>
+<script>
+  // Already signed in (or no login configured): straight to the app.
+  fetch("/api/auth/me").then((r) => r.json()).then((me) => { if (!me.enabled || me.user) location.replace("/"); });
+  document.getElementById("login").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const error = document.getElementById("login-error");
+    error.textContent = "";
+    form.querySelector("button").disabled = true;
+    try {
+      const res = await fetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user: form.user.value.trim(), password: form.password.value }) });
+      if (res.ok) return location.replace("/");
+      error.textContent = ((await res.json()).errors || ["Couldn't sign in."]).join(" ");
+    } catch {
+      error.textContent = "Couldn't reach the server.";
+    }
+    form.password.value = "";
+    form.querySelector("button").disabled = false;
+  });
+</script>
+</body>
+</html>

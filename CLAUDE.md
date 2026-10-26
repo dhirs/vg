@@ -149,7 +149,8 @@ AWS profile is used). Our prod account is still managed by the `deploy/` scripts
   regenerate `statemachine/consent_sync.asl.json`. A new or changed resource in a deploy script
   must also be made in `template.yaml` (check with `sam validate --lint`).
 
-**On a server:** `send_to_cpms/web/INSTALL.md` sets it up behind nginx (HTTPS + basic auth,
+**On a server:** `send_to_cpms/web/INSTALL.md` sets it up behind nginx (HTTPS, the app's own
+login page — `AUTH_USER` + `AUTH_PASSWORD`, required behind HTTPS —
 systemd service `cpms-web`, settings from `/etc/cpms/cpms-web.env` instead of `.env.prod`);
 after that, pushes to `main` deploy through `.github/workflows/deploy-web.yml`. Server files:
 `send_to_cpms/web/hosting/`.

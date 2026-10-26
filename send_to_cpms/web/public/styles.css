@@ -367,3 +367,9 @@ input:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px v
 .gmail-dialog .actions { justify-content: flex-end; }
 .gmail-dialog.done { color: var(--ok); background: var(--ok-soft); font-weight: 600; }
 .oc-behind-title { margin-top: 24px; }
+
+/* App login page (login.html) */
+.login-wrap { min-height: calc(100vh - var(--topbar-h)); display: grid; place-items: center; padding: 24px 16px; }
+.login-card { width: 100%; max-width: 400px; display: grid; gap: 4px; }
+.login-card .error { margin: 0; min-height: 1.2em; }
+.side-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
