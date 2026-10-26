@@ -20,6 +20,8 @@
 //   Marketo: lead ID -> email (and the lead's stored ref must match)
 // then OneTrust: email -> link token -> magic link -> redirect. Marketo, the CRM and OneTrust are
 // stubs (no API access yet); the redirect opens a local stand-in for OneTrust's preference centre.
+// - email header (one-click): Gmail POSTs to the List-Unsubscribe URL (same ref) -> decrypt ->
+//   Marketo: lead ID -> email -> a "withdrawn" source_event on the bus, like a registration. No page.
 //
 // Also: "Open questions", "OneTrust Connectors" and "Schematics" reference pages, read live from
 // consent_fanout/ and each flow's diagrams/.
@@ -403,6 +405,7 @@ app.get("/api/email/message", (req, res) => {
     to: user ? `${displayName(user)} <${lead.email}>` : lead.email,
     subject: "Markets this week: what the Autumn Budget means for your clients",
     ref: lead.cpmsPrefRef,
+    headers: listUnsubscribe(lead.cpmsPrefRef),
   });
 });
 
@@ -432,6 +435,46 @@ app.get(`${MARKETO_ENDPOINT}/magiclink`, async (req, res) => {
   const email = leadForRef(req.query.ref)?.lead.email;
   if (!email) return res.status(400).json({ errors: [INVALID_LINK] });
   res.json(await magicLink(email));
+});
+
+// --- One-click unsubscribe (RFC 8058): the email's List-Unsubscribe header points here. The mailbox
+// provider (Gmail) POSTs "List-Unsubscribe=One-Click" from its own servers — no browser, no page —
+// so this does the whole opt-out and answers straight away. Stands in for API Gateway +
+// cpms-lambda-oneclick-unsub. The ref is the same {{lead.cpmsPrefRef}} as the body link.
+const ONECLICK_ENDPOINT = "/api/marketo/unsubscribe";
+const ONECLICK_PURPOSE = "marketing_communications"; // what the header unsubscribes from (assumption)
+const listUnsubscribe = (ref) => ({
+  "List-Unsubscribe": `<https://<cpms-host>/marketo/unsubscribe?ref=${ref}>`,
+  "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+});
+
+app.post(ONECLICK_ENDPOINT, express.urlencoded({ extended: false, limit: "1kb" }), async (req, res) => {
+  if ((req.body || {})["List-Unsubscribe"] !== "One-Click") return res.status(400).json({ errors: ["Not a one-click unsubscribe request."] });
+  const found = leadForRef(req.query.ref);
+  if (!found) return res.status(400).json({ errors: [INVALID_LINK] });
+  const { lead } = found;
+  const now = isoNow();
+  const event = {
+    schemaVersion: "1.0",
+    eventId: randomUUID(),
+    eventType: "email_unsubscribe",
+    sourceSystem: "email_oneclick",
+    occurredAt: now,
+    subject: { identifierType: "email", identifierValue: lead.email },
+    consent: [{ purpose: ONECLICK_PURPOSE, status: "withdrawn", capturedAt: now, captureMethod: "list_unsubscribe_one_click" }],
+    provenance: { sourceEventId: `oneclick-${randomUUID().slice(0, 12)}`, captureChannel: "email", policyVersion: POLICY_VERSION },
+  };
+  const errors = schemaErrors(event);
+  if (errors.length) return res.status(500).json({ errors });
+  try {
+    const resp = await eventBridge.send(new PutEventsCommand({ Entries: [{ ...putEntry(event), Detail: JSON.stringify(event) }] }));
+    const entry = resp.Entries[0];
+    if (resp.FailedEntryCount) return res.status(502).json({ errors: [`${entry.ErrorCode}: ${entry.ErrorMessage}`] });
+    res.json({ leadId: lead.leadId, email: lead.email, event, eventBridgeId: entry.EventId, bus: BUS_NAME,
+      request: `POST https://<cpms-host>/marketo/unsubscribe?ref=${req.query.ref} · List-Unsubscribe=One-Click` });
+  } catch (e) {
+    res.status(502).json({ errors: [`${e.name}: ${e.message}`] });
+  }
 });
 
 // --- Website endpoint (/website/preferences): the signed-in Vanguard 365 user's own preferences.
@@ -492,6 +535,7 @@ const commentsFile = (doc) => join(QUESTIONS_DIR, "comments", `${doc}.json`);
 const SCHEMATIC_ORDER = [
   { file: "send_to_cpms/diagrams/New_Consent_Record.drawio", label: "New_Consent_Record" },
   { file: "send_to_cpms/diagrams/Email_Consent_Update.drawio", label: "Email_Consent_Update" },
+  { file: "send_to_cpms/diagrams/Email_OneClick_Unsubscribe.drawio", label: "Email_OneClick_Unsubscribe" },
   { file: "send_to_cpms/diagrams/Website_Consent_Update.drawio", label: "Website_Consent_Update" },
   { file: "send_to_cpms/diagrams/CPMS_Router.drawio", label: "CPMS_Router" },
   { file: "consent_fanout/diagrams/OT_to_SFMC.drawio", label: "OT to SFMC" },

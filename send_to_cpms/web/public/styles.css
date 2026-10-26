@@ -354,3 +354,16 @@ input:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px v
 .md-table th, .md-table td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
 .md-table th { background: var(--surface-2); color: var(--ink); font-weight: 600; }
 .md-table tr:last-child td { border-bottom: 0; }
+
+/* One-click unsubscribe: the email as Gmail shows it */
+.gmail-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); display: grid; gap: 4px; font-size: 13.5px; }
+.gmail-subject { font-size: 19px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+.gmail-from { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; color: var(--ink); }
+.gmail-from span, .gmail-to { color: var(--muted); }
+.gmail-unsub { background: none; border: 0; padding: 0; font: 600 13px Inter, sans-serif; color: var(--info); text-decoration: underline; cursor: pointer; }
+.gmail-unsub:disabled { color: var(--muted); text-decoration: none; cursor: default; }
+.gmail-dialog { margin: 14px 18px 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+.gmail-dialog p { margin: 0; color: var(--ink-2); }
+.gmail-dialog .actions { justify-content: flex-end; }
+.gmail-dialog.done { color: var(--ok); background: var(--ok-soft); font-weight: 600; }
+.oc-behind-title { margin-top: 24px; }

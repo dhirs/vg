@@ -105,7 +105,8 @@ app opens at <http://localhost:8600>.
    - **S3 → your bucket → `cpms/success/`** — the run record
    - **SQS → cpms-sqs-outbound.fifo** — the queued OneTrust receipt
 4. Then try **Account registration**, the **Secure portal** (sign in with an email you registered,
-   no password) and **Email Unsubscribe** — those two use local stubs, no AWS.
+   no password) and **Email Unsubscribe** — those two use local stubs, no AWS — and **Email
+   Unsubscribe (Header)**, which sends a withdrawal through the pipeline in your account.
 
 ## Updating
 

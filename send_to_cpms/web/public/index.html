@@ -45,6 +45,10 @@
           <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
           <span>Email Unsubscribe<small>Marketo email · encrypted ref → magic link</small></span>
         </a>
+        <a href="#/oneclick" class="side-link" data-flow="oneclick">
+          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/><path d="M15 3l6 6M21 3l-6 6"/></svg>
+          <span>Email Unsubscribe (Header)<small>Gmail one-click · no page → OneTrust</small></span>
+        </a>
       </details>
       <details class="side-group">
         <summary class="side-label">CPMS Key Components</summary>
@@ -133,6 +137,15 @@
       </div>
     </section>
 
+    <!-- One-click unsubscribe (List-Unsubscribe header) header -->
+    <section class="hero" data-flow="oneclick" hidden>
+      <div class="hero-inner">
+        <span class="eyebrow">Email unsubscribe · header</span>
+        <h1>Unsubscribe from inside Gmail</h1>
+        <p class="hero-lead">Gmail's Unsubscribe button POSTs to the email's List-Unsubscribe URL from Google's servers. CPMS decrypts the ref, finds the email in Marketo and sends a withdrawal to OneTrust. The person never leaves their inbox.</p>
+      </div>
+    </section>
+
     <!-- OneTrust preference centre (stand-in) header -->
     <section class="hero" data-flow="onetrust" hidden>
       <div class="hero-inner">
@@ -192,11 +205,11 @@
       <!-- ===== OneTrust preference centre stand-in (magic link target) ===== -->
       <div data-flow="onetrust" hidden><div class="card" id="otpc-body"></div></div>
 
-      <!-- ===== Updating consent: secure portal (signed in) and email link (Marketo lead ID) ===== -->
-      <div data-flow="preferences unsubscribe" hidden>
+      <!-- ===== Updating consent: secure portal (signed in), email link (Marketo lead ID), email header (one-click) ===== -->
+      <div data-flow="preferences unsubscribe oneclick" hidden>
         <div class="card progress-card">
           <div class="progress-head">
-            <h2>Opening your preferences</h2>
+            <h2 id="progress-title">Opening your preferences</h2>
             <button class="btn ghost small" id="signout" type="button" hidden>Sign out</button>
           </div>
           <ol class="progress" id="progress"></ol>

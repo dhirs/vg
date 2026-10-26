@@ -2,6 +2,7 @@
 // two-step form -> source_event preview -> send to CPMS -> what CPMS generated for OneTrust.
 // Plus two ways to update consent, both ending in OneTrust's preference centre via a magic link:
 // secure portal (sign in -> local ID -> CRM -> email) and email link (encrypted lead ID -> decrypt -> Marketo -> email).
+// And one with no page at all: the email's List-Unsubscribe header (Gmail one-click -> withdrawn source_event).
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
 const FLOWS = ["event", "account"];
@@ -40,9 +41,9 @@ async function loadConfig() {
        <span><b>${esc(c.label)}</b><small>${esc(c.description)}</small></span></label>`).join("");
 }
 
-// ---------- routing: #/event, #/account, #/unsubscribe[?ref=…], #/preferences[?localId=…], #/onetrust?token=…,
+// ---------- routing: #/event, #/account, #/unsubscribe[?ref=…], #/oneclick, #/preferences[?localId=…], #/onetrust?token=…,
 // #/router/<doc>, #/questions/<doc>, #/connectors/<doc>, #/schematics/<id>
-const PAGES = [...FLOWS, "unsubscribe", "preferences", "onetrust", "router", "questions", "connectors", "schematics"];
+const PAGES = [...FLOWS, "unsubscribe", "oneclick", "preferences", "onetrust", "router", "questions", "connectors", "schematics"];
 function route() {
   const [path, query = ""] = location.hash.replace(/^#\//, "").split("?");
   const [page, doc] = path.split("/");
@@ -61,6 +62,7 @@ function route() {
   const params = new URLSearchParams(query);
   if (flow === "preferences") return preferenceCentre({ mode: "portal", localId: params.get("localId") });
   if (flow === "unsubscribe") return preferenceCentre({ mode: "unsubscribe", ref: params.get("ref") });
+  if (flow === "oneclick") return oneClick();
   if (flow === "onetrust") return oneTrustStandIn(params.get("token"));
   $("tab-form").textContent = flow === "event" ? "Register" : "Create account";
   showTab(tab);
@@ -296,11 +298,20 @@ const STEPS = {
     { key: "marketo", title: "Marketo lookup", hint: "lead ID → email" },
     ...MAGIC_STEPS,
   ],
+  oneclick: [
+    { key: "email", title: "Marketing email", hint: "carries List-Unsubscribe headers" },
+    { key: "click", title: "Gmail Unsubscribe", hint: "button next to the sender" },
+    { key: "post", title: "One-click POST", hint: "Gmail's servers → CPMS endpoint" },
+    { key: "marketo", title: "Decrypt + Marketo", hint: "ref → lead ID → email" },
+    { key: "bus", title: "Withdrawal to CPMS", hint: "source_event on the bus" },
+    { key: "onetrust", title: "OneTrust receipt", hint: "WITHDRAWN · same pipeline" },
+  ],
 };
 const REDIRECT_DELAY_MS = 4000; // long enough to see what happened before the page moves on
 // One endpoint per way in: the path says where the request came from, so no "source" parameter.
 const MARKETO_ENDPOINT = "/api/marketo/preferences"; // the email link (a Marketo pre-encrypted lead ID)
 const WEBSITE_ENDPOINT = "/api/website/preferences"; // the signed-in Vanguard 365 user
+const ONECLICK_ENDPOINT = "/api/marketo/unsubscribe"; // the email's List-Unsubscribe header (Gmail one-click)
 const pc = { run: 0, mode: "portal", status: {}, details: {}, mailTo: null };
 
 function setProgress() {
@@ -328,6 +339,7 @@ async function preferenceCentre({ mode, localId, ref }) {
   const body = (html) => { if (live()) $("pc-body").innerHTML = html; };
   const fail = (key, err) => { step(key, "error", err.message); body(`<div class="callout err">${esc(err.message)}</div>`); };
   const ctx = { step, body, fail, live };
+  $("progress-title").textContent = "Opening your preferences";
   $("signout").hidden = true;
   setProgress();
 
@@ -449,6 +461,114 @@ async function emailHtml() {
         <a href="${link}">Manage your preferences</a>
         <span class="mail-link">https://&lt;cpms-host&gt;/marketo/preferences?ref={{lead.cpmsPrefRef}} → ref ${esc(mail.ref)}</span></footer>
     </article>`;
+}
+
+// ---------- one-click unsubscribe (List-Unsubscribe header): no page — Gmail POSTs, CPMS does the rest
+async function oneClick() {
+  const run = ++pc.run;
+  Object.assign(pc, { mode: "oneclick", status: {}, details: {} });
+  $("progress-title").textContent = "Unsubscribing";
+  $("signout").hidden = true;
+  pc.status.email = "active";
+  setProgress();
+  try {
+    const html = await gmailHtml();
+    if (run === pc.run) $("pc-body").innerHTML = html;
+  } catch (err) {
+    pc.status.email = "error"; pc.details.email = err.message; setProgress();
+    $("pc-body").innerHTML = `<div class="callout err">${esc(err.message)}</div>`;
+  }
+}
+
+// The same Marketo email, as Gmail shows it: the Unsubscribe button next to the sender comes from
+// the List-Unsubscribe / List-Unsubscribe-Post headers, not from anything in the body.
+async function gmailHtml() {
+  const { recipients } = await API("/api/email/recipients");
+  if (!recipients.some((r) => String(r.leadId) === String(pc.mailTo))) pc.mailTo = recipients[0]?.leadId;
+  if (!pc.mailTo) return `<p class="empty">No one to email yet — register on the event or account page first.</p>`;
+  const mail = await API(`/api/email/message?leadId=${encodeURIComponent(pc.mailTo)}`);
+  pc.oneClickRef = mail.ref;
+  const [name, address] = mail.from.match(/^(.*?)\s*<(.*)>$/).slice(1);
+  return `
+    <h3 class="pc-title">Gmail</h3>
+    <p class="lead">The same Marketo email, opened in Gmail. Click <b>Unsubscribe</b> next to the sender — Gmail handles it without opening any page.</p>
+    <label class="field mail-to"><span class="label">Recipient</span>
+      <select id="mail-to">${recipients.map((r) =>
+        `<option value="${esc(r.leadId)}"${String(r.leadId) === String(pc.mailTo) ? " selected" : ""}>${esc(r.name)} · ${esc(r.email)}</option>`).join("")}</select></label>
+    <article class="mail gmail">
+      <header class="gmail-head">
+        <div class="gmail-subject">${esc(mail.subject)}</div>
+        <div class="gmail-from"><b>${esc(name)}</b> <span>&lt;${esc(address)}&gt;</span>
+          <button class="gmail-unsub" type="button" id="oc-unsub">Unsubscribe</button></div>
+        <div class="gmail-to">to ${esc(mail.to)}</div>
+      </header>
+      <div id="oc-dialog"></div>
+      <div class="mail-body">
+        <h4>Markets this week</h4>
+        <p>The Autumn Budget brought changes to pension allowances and capital gains that will shape conversations with your clients over the coming months.</p>
+      </div>
+      <footer class="mail-foot">Headers Marketo adds (signed by DKIM):
+        ${Object.entries(mail.headers).map(([k, v]) => `<span class="mail-link">${esc(k)}: ${esc(v)}</span>`).join("")}</footer>
+    </article>
+    <div id="oc-behind"></div>`;
+}
+
+const gmailDialog = (html) => { $("oc-dialog").innerHTML = html; };
+document.addEventListener("click", (e) => {
+  if (e.target.id === "oc-unsub") {
+    pc.status.click = "active"; setProgress();
+    gmailDialog(`<div class="gmail-dialog"><b>Unsubscribe from Vanguard Adviser Insights?</b>
+      <p>Gmail will ask the sender to stop sending you marketing email.</p>
+      <div class="actions"><button class="btn ghost small" type="button" id="oc-cancel">Cancel</button>
+        <button class="btn primary small" type="button" id="oc-confirm">Unsubscribe</button></div></div>`);
+  } else if (e.target.id === "oc-cancel") {
+    delete pc.status.click; setProgress(); gmailDialog("");
+  } else if (e.target.id === "oc-confirm") {
+    oneClickSend();
+  }
+});
+
+async function oneClickSend() {
+  const run = pc.run;
+  const live = () => run === pc.run;
+  const step = (key, st, detail) => { pc.status[key] = st; if (detail) pc.details[key] = detail; if (live()) setProgress(); };
+  const behind = (html) => { if (live()) $("oc-behind").innerHTML = html; };
+  const fail = (key, err) => { step(key, "error", err.message); behind(`<div class="callout err">${esc(err.message)}</div>`); };
+  step("email", "done", "List-Unsubscribe present");
+  step("click", "done", "confirmed in Gmail");
+  $("oc-unsub").disabled = true;
+  gmailDialog(`<div class="gmail-dialog"><span class="spinner"></span> Unsubscribing…</div>`);
+  // What Gmail's servers send: a POST to the header URL, form body "List-Unsubscribe=One-Click".
+  step("post", "active", "POST from Gmail…");
+  let sent;
+  try {
+    sent = await API(`${ONECLICK_ENDPOINT}?ref=${encodeURIComponent(pc.oneClickRef)}`, {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "List-Unsubscribe=One-Click" });
+  } catch (err) {
+    gmailDialog("");
+    return fail("post", err);
+  }
+  if (!live()) return;
+  step("post", "done", "200 OK");
+  step("marketo", "done", `lead ${sent.leadId} → ${sent.email}`);
+  step("bus", "done", `eventId ${sent.event.eventId.slice(0, 8)}…`);
+  gmailDialog(`<div class="gmail-dialog done">✓ Unsubscribed. You won't get marketing email from this sender.</div>`);
+  step("onetrust", "active", "CPMS processing…");
+  const calls = `<ol class="calls">
+      <li><span>Gmail → CPMS</span><code>${esc(sent.request)}</code></li>
+      <li><span>Event on the bus</span><code>${esc(sent.bus)} · source cpms.${esc(sent.event.sourceSystem)} · ${esc(sent.eventBridgeId)}</code></li>
+    </ol>`;
+  const sentHtml = `<div class="receipt-title"><span>Source event CPMS sent itself</span><small>eventType ${esc(sent.event.eventType)}</small></div>
+    <pre class="code">${json(sent.event)}</pre>`;
+  behind(`<h3 class="pc-title oc-behind-title">Behind the scenes</h3>${calls}${waiting("CPMS is processing the withdrawal… usually a few seconds.")}${sentHtml}`);
+  try {
+    const result = await waitForResult(sent.event.eventId);
+    if (!live()) return;
+    step("onetrust", result.outcome === "rejected" ? "error" : "done", result.outcome === "sent" ? "receipt queued" : result.outcome);
+    behind(`<h3 class="pc-title oc-behind-title">Behind the scenes</h3>${calls}${resultHtml(result)}${sentHtml}`);
+  } catch (err) {
+    fail("onetrust", err);
+  }
 }
 
 document.addEventListener("change", (e) => {

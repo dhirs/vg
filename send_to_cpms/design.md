@@ -692,6 +692,10 @@ There are two ways in; they differ only in how the email is found. Each has its 
 `diagrams/Website_Consent_Update.drawio` (signed-in website user). New consent records from EMO
 and CL6 are `diagrams/New_Consent_Record.drawio`.
 
+The one exception is the **one-click unsubscribe** in the email's header (Gmail's own
+Unsubscribe button): no page can open there, so it sends a withdrawal straight into CPMS instead
+— see **One-click unsubscribe (List-Unsubscribe header)** below.
+
 **From a marketing email (Marketo).**
 
 1. **Email** — the "Manage your preferences" link in a Marketo email points at the intermediate
@@ -799,6 +803,55 @@ log the `ref`, the lead ID or the email together in plain text.
 - **Sign-in** — simulated: any email in the stub CRM, no password (an unknown email gets
   "No account found… register first"); an in-memory session cookie.
 
+### One-click unsubscribe (List-Unsubscribe header)
+
+Gmail and Yahoo show their own **Unsubscribe** button next to the sender when an email carries
+the RFC 8058 headers, and since February 2024 they **require** it from bulk senders (over 5,000
+a day to Gmail), honoured within **2 days**. Leaving it out risks throttling and the spam
+folder for the whole sending domain, and pushes people who want out to "Report spam" instead.
+
+**Why it can't use the magic link.** When the person clicks, Gmail's *servers* send
+`POST <List-Unsubscribe URL>` with the form body `List-Unsubscribe=One-Click` — not the
+browser. No cookie, no redirect followed, nothing shown. So there's no preference centre to
+hand over to: the endpoint must do the opt-out itself and answer `200`. This is the one
+update path that **sends a source event into CPMS**, like EMO and CL6 do — CPMS is the source
+here. Diagram: `diagrams/Email_OneClick_Unsubscribe.drawio`.
+
+**The headers** Marketo adds to every marketing email, covered by its DKIM signature (Gmail
+ignores them otherwise):
+
+```
+List-Unsubscribe: <https://<cpms-host>/marketo/unsubscribe?ref={{lead.cpmsPrefRef}}>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+```
+
+The `ref` is the **same `cpmsPrefRef`** as the body link — already unguessable, revocable and
+stored on the lead — so there's no new token. The body link stays: Gmail doesn't always show
+its button, and people who want to adjust rather than leave still get the preference centre.
+
+**What `POST /marketo/unsubscribe` does** (`cpms-lambda-oneclick-unsub`, a route on
+`cpms-apigw-router`; not built):
+1. Body must be `List-Unsubscribe=One-Click`; anything else → `400`. POST only, so link
+   scanners and antivirus tools that fetch URLs can't unsubscribe anyone.
+2. Validate and decrypt `ref`, then Marketo *Get Lead by Id* with the `cpmsPrefRef` match —
+   exactly the checks in **The email link's `ref`** above.
+3. Publish a standard `source_event` to `cpms-eventbus-consent`: `eventType: email_unsubscribe`,
+   `sourceSystem: email_oneclick`, `consent[] = marketing_communications · withdrawn`,
+   `captureMethod: list_unsubscribe_one_click`, `captureChannel: email`.
+4. Answer `200` straight away. The rest is asynchronous.
+
+From the bus on, it's the **unchanged pipeline**: the rule already takes any `cpms.*` source,
+a withdrawn purpose already turns off its topics (step 2), and step 4 builds a receipt with
+`TransactionType: WITHDRAWN`. The consent fanout then carries it back to Marketo.
+
+**In the test app** — "Email Unsubscribe (Header)" shows the Marketo email as Gmail would, with
+the headers. Its Unsubscribe button makes the same POST to the local server's
+`/api/marketo/unsubscribe`, which stands in for the Lambda: it uses the stub Marketo and
+`ref` key, and puts a **real** event on the AWS bus, so the page shows the OneTrust receipt
+CPMS generated.
+
+Open points are under **Open items**.
+
 ## Error handling rules
 
 - **DLQ is reserved for network/connectivity failures only** (e.g. SQS calls timing out
@@ -881,6 +934,7 @@ S3 "components" are `cpms/<store>/` prefixes inside the existing bucket.
 | Dispatcher | `cpms-lambda-dispatcher` |
 | Email-link `ref` issuer (Marketo webhook; not built) | `cpms-lambda-pref-ref-issue` |
 | Email-link handler behind `GET /marketo/preferences`: decrypt → Marketo → OneTrust magic link → redirect (not built) | `cpms-lambda-pref-redirect` |
+| One-click unsubscribe handler behind `POST /marketo/unsubscribe`: decrypt → Marketo → withdrawn source_event (not built) | `cpms-lambda-oneclick-unsub` |
 | Email-link `ref` key | `cpms-secret-pref-ref-key` |
 | Marketo webhook shared secret | `cpms-secret-marketo-webhook` |
 | Taxonomy updater (prod only) | `cpms-lambda-taxonomy-updater` |
@@ -994,6 +1048,15 @@ networking and extra storage before the flow is proven.
   changed in OneTrust's preference centre, so how purposes and topics behave there is
   OneTrust configuration. Step 2 still derives topic opt-outs from a purpose withdrawal for
   sources that send one.
+- **One-click unsubscribe (List-Unsubscribe header)** — see **One-click unsubscribe**.
+  Still to settle: (a) whether Marketo lets every marketing email carry *our*
+  `List-Unsubscribe` URL instead of its own; (b) what the header unsubscribes from — assumed
+  all of `marketing_communications`; a per-topic opt-out would need the topic in the URL;
+  (c) the **2-day deadline**: Marketo only stops sending once the withdrawal has gone
+  CPMS → OneTrust → fanout → Marketo, and OneTrust receipts are queued, not sent, until we have
+  API access — so a direct Marketo suppression from the Lambda may be needed meanwhile;
+  (d) its own collection point ("Vanguard Email One-Click") — the `sourceSystem` →
+  collection point mapping isn't built yet, so it uses the single configured JWT today.
 - **Should reminders for events someone registered for survive "opt out of all"?** Today the
   full opt-out withdraws `event_communications` too (it covers every purpose). If
   registered-event reminders are service messages that must continue, they need to move

@@ -28,6 +28,12 @@ When someone clicks, the route's own Lambda:
 The magic link is fetched for that one click and never stored anywhere. The route a link points
 at tells the router which system the ID came from — there's no "source" parameter.
 
+**One route doesn't redirect: `POST /marketo/unsubscribe`.** It's the URL in the email's
+`List-Unsubscribe` header, called by Gmail's servers when someone clicks Gmail's own Unsubscribe
+button — there's no browser to redirect. It takes the same `{{lead.cpmsPrefRef}}`, decrypts it and
+looks the email up the same way, then sends a `withdrawn` event into CPMS and answers `200`
+(`cpms-lambda-oneclick-unsub`; flow: the **Email_OneClick_Unsubscribe** schematic).
+
 ## The problems it solves
 
 The two problems with seeding OneTrust magic links into every system (see **OneTrust magic
@@ -58,11 +64,12 @@ sync — however many systems are added.
 ## What it's made of
 
 - **API Gateway** `cpms-apigw-router`, one route per system, each throttled on its own.
-- **One Lambda per route** — `cpms-lambda-router-marketo`, `cpms-lambda-router-website` — with its
+- **One Lambda per route** — `cpms-lambda-router-marketo`, `cpms-lambda-router-website`,
+  `cpms-lambda-oneclick-unsub` — with its
   own secrets, so one route's compromise doesn't expose another's.
 - **A shared module** for what every route does the same way: decrypting, calling OneTrust,
   the generic error page, failure counting and logging rules.
 - **One key per route** in Secrets Manager (`cpms-secret-pref-ref-key`, `cpms-secret-web-ref-key`).
 
 Full parts list: `send_to_cpms/building_blocks.md` → CPMS_Router. Flows: the
-**Email_Consent_Update** and **Website_Consent_Update** schematics.
+**Email_Consent_Update**, **Email_OneClick_Unsubscribe** and **Website_Consent_Update** schematics.

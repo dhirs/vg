@@ -62,6 +62,24 @@ one of these, with what a good answer and a red flag look like.
    *Good:* failures are kept (dead-letter queue or equivalent), alarmed and replayable, with a
    named owner. *Red flag:* failures only visible in OneTrust's workflow log.
 
+### One-click unsubscribe (Gmail's Unsubscribe button)
+
+CPMS plans to receive the one-click unsubscribe itself (`send_to_cpms/design.md` → One-click
+unsubscribe), so these are about whether Marketo and the integration allow that.
+
+7. **Can every marketing email carry *our* `List-Unsubscribe` URL instead of Marketo's own?**
+   *Why:* Gmail and Yahoo require one-click unsubscribe from bulk senders; if Marketo always
+   adds its own header, the opt-out lands in Marketo and OneTrust never hears of it.
+   *Good:* the header is configurable per email or instance (pointing at
+   `/marketo/unsubscribe?ref={{lead.cpmsPrefRef}}`), and DKIM-signed. *Red flag:* Marketo's
+   header can't be changed, and its unsubscribes aren't synced back to OneTrust.
+
+8. **How long from a OneTrust withdrawal to Marketo no longer sending?**
+   *Why:* a one-click unsubscribe must be honoured within 2 days, and it reaches Marketo only
+   through this integration.
+   *Good:* minutes, measured, with opt-outs prioritised. *Red flag:* a daily batch, or no
+   figure.
+
 ## Sources
 
 - [OneTrust: Marketo integration](https://www.onetrust.com/integrations/marketo/)

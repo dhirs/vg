@@ -109,7 +109,9 @@ workflow — GitHub requires it at the root) — no design content lives at root
 Local Node.js app. Left sidebar: **Non-logged in flows** (new consent record — **Event
 registration** via EMO, **Account registration** via CL6 / Vanguard 365) and **Logged in
 flows** (update consent — **Secure portal** and **Email Unsubscribe**, both of which find the
-person's email and redirect to OneTrust's preference centre via a magic link).
+person's email and redirect to OneTrust's preference centre via a magic link; plus **Email
+Unsubscribe (Header)** — Gmail's one-click List-Unsubscribe POST, which sends a `withdrawn`
+source_event straight into CPMS with no page in between).
 Below them, **Open questions** shows each `consent_fanout/<doc>.md` (so far `SFMC`, `AEP` and `Marketo`) question
 by question, read live from the file, with comments saved to
 `consent_fanout/comments/<doc>.json`. To add a file, add its name to `QUESTION_DOCS` in
