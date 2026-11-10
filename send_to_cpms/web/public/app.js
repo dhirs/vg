@@ -873,8 +873,10 @@ $("app-signout").addEventListener("click", async () => {
 // ---------- Documents (#/documents): upload to S3 cpms/wrkdocs/, list, download one or many (zip)
 const DOC_TYPES = ["pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "gif", "webp"];
 const DOC_MAX_BYTES = 100 * 1024 * 1024;
-let docs = [];
-const docSelected = new Set();
+const DOCS_PER_PAGE = 5;
+let docs = []; // newest first (the server sorts)
+let docPage = 0;
+const docSelected = new Set(); // kept across pages, so a download can span several
 const fmtSize = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 const fmtAdded = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
@@ -894,25 +896,36 @@ function renderDocuments() {
   $("docs-download").disabled = !docSelected.size;
   $("docs-download").textContent = docSelected.size > 1 ? `Download ${docSelected.size} files (.zip)` : "Download";
   if (!docs.length) return void ($("docs-body").innerHTML = `<p class="empty">No documents yet — upload some above.</p>`);
-  const all = docSelected.size === docs.length;
+  const pages = Math.ceil(docs.length / DOCS_PER_PAGE);
+  docPage = Math.min(docPage, pages - 1);
+  const shown = docs.slice(docPage * DOCS_PER_PAGE, (docPage + 1) * DOCS_PER_PAGE);
+  const picked = shown.filter((d) => docSelected.has(d.key)).length;
+  const all = picked === shown.length;
   $("docs-body").innerHTML = `<div class="docs-table"><table>
-    <thead><tr><th class="sel"><input type="checkbox" id="docs-all" aria-label="Select all" ${all ? "checked" : ""}></th>
+    <thead><tr><th class="sel"><input type="checkbox" id="docs-all" aria-label="Select all on this page" ${all ? "checked" : ""}></th>
       <th>Name</th><th class="num">Size</th><th class="num">Added</th></tr></thead>
-    <tbody>${docs.map((d) => `<tr>
+    <tbody>${shown.map((d) => `<tr>
       <td class="sel"><input type="checkbox" data-key="${esc(d.key).replace(/"/g, "&quot;")}" aria-label="Select ${esc(d.name)}" ${docSelected.has(d.key) ? "checked" : ""}></td>
       <td class="name"><span class="ext">${esc(d.name.split(".").pop())}</span>${esc(d.name)}</td>
       <td class="num">${fmtSize(d.size)}</td><td class="num">${esc(fmtAdded(d.added))}</td></tr>`).join("")}</tbody>
-  </table></div>`;
-  $("docs-all").indeterminate = docSelected.size > 0 && !all;
+  </table></div>
+  ${pages > 1 ? `<nav class="pager" aria-label="Pages">
+    <button class="btn ghost small" type="button" data-page="${docPage - 1}" ${docPage === 0 ? "disabled" : ""}>‹ Previous</button>
+    <span>Page ${docPage + 1} of ${pages}${docSelected.size ? ` · ${docSelected.size} selected` : ""}</span>
+    <button class="btn ghost small" type="button" data-page="${docPage + 1}" ${docPage === pages - 1 ? "disabled" : ""}>Next ›</button>
+  </nav>` : ""}`;
+  $("docs-all").indeterminate = picked > 0 && !all;
 }
 
 $("docs-body").addEventListener("change", (e) => {
-  if (e.target.id === "docs-all") docs.forEach((d) => e.target.checked ? docSelected.add(d.key) : docSelected.delete(d.key));
+  if (e.target.id === "docs-all") docs.slice(docPage * DOCS_PER_PAGE, (docPage + 1) * DOCS_PER_PAGE).forEach((d) => e.target.checked ? docSelected.add(d.key) : docSelected.delete(d.key));
   else if (e.target.dataset.key) e.target.checked ? docSelected.add(e.target.dataset.key) : docSelected.delete(e.target.dataset.key);
   renderDocuments();
 });
 // clicking anywhere on a row toggles it
 $("docs-body").addEventListener("click", (e) => {
+  const pageBtn = e.target.closest("[data-page]");
+  if (pageBtn) { docPage = Number(pageBtn.dataset.page); return renderDocuments(); }
   const box = e.target.closest("tbody tr")?.querySelector("input[data-key]");
   if (box && e.target !== box) { box.checked = !box.checked; box.dispatchEvent(new Event("change", { bubbles: true })); }
 });
@@ -963,6 +976,7 @@ function uploadDoc(file) {
 async function uploadDocs(files) {
   if (!files.length) return;
   await Promise.all([...files].map(uploadDoc));
+  docPage = 0; // new uploads are at the top
   openDocuments();
 }
 $("docs-input").addEventListener("change", (e) => { uploadDocs(e.target.files); e.target.value = ""; });

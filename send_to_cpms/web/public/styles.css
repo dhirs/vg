@@ -409,3 +409,5 @@ input:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px v
 .docs-table input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--brand); cursor: pointer; }
 .docs-table tbody tr:hover { background: var(--surface-2); }
 .docs-table .ext { display: inline-block; min-width: 40px; margin-right: 8px; padding: 1px 6px; border-radius: 5px; font: 600 10.5px Inter, sans-serif; text-transform: uppercase; text-align: center; background: var(--surface-2); color: var(--muted); }
+.pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; font-size: 13.5px; color: var(--muted); }
+.pager .btn:disabled { opacity: .45; cursor: default; }
