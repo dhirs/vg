@@ -34,10 +34,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { EventBridgeClient, PutEventsCommand } from "@aws-sdk/client-eventbridge";
-import { GetObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
+import archiver from "archiver";
 import express from "express";
+import multer from "multer";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FLOW_DIR = join(HERE, "..");
@@ -327,10 +329,12 @@ const cookie = (req, name) => (req.headers.cookie || "").split(";").map((c) => c
 const sessionOf = (req) => sessions.get(cookie(req, "cpms_session"));
 
 // --- App login (replaces nginx basic auth, which corporate browsers and proxies often block).
-// One user + password from the settings. The session is a signed cookie (user + expiry + HMAC),
+// Users from the settings (AUTH_USER) plus DOCS_USER, all sharing AUTH_PASSWORD; only DOCS_USER
+// sees the Documents page. The session is a signed cookie (user + expiry + HMAC),
 // so restarts don't log anyone out; its key is derived from the password, so changing the
 // password logs everyone out.
-const AUTH = env.AUTH_USER ? { user: env.AUTH_USER, password: env.AUTH_PASSWORD } : null;
+const DOCS_USER = "cpms1";
+const AUTH = env.AUTH_USER ? { users: [env.AUTH_USER, DOCS_USER], password: env.AUTH_PASSWORD } : null;
 const AUTH_COOKIE = "cpms_auth";
 const AUTH_TTL_MS = 7 * 24 * 3600 * 1000;
 const AUTH_PUBLIC = new Set(["/login.html", "/styles.css", "/vanguard-logo.svg", "/api/auth/login", "/api/auth/me"]);
@@ -345,7 +349,8 @@ function authedUser(req) {
   if (!mac || Number(expires) < Date.now()) return null;
   const expected = Buffer.from(sign(`${user}.${expires}`));
   if (expected.length !== Buffer.from(mac).length || !timingSafeEqual(expected, Buffer.from(mac))) return null;
-  return Buffer.from(user, "base64url").toString("utf8");
+  const name = Buffer.from(user, "base64url").toString("utf8");
+  return AUTH.users.includes(name) ? name : null;
 }
 // Compared as SHA-256 digests so the comparison is constant-time whatever the lengths.
 const digest = (s) => createHash("sha256").update(String(s)).digest();
@@ -358,7 +363,10 @@ const clientIp = (req) => req.headers["x-real-ip"] || req.socket.remoteAddress;
 const app = express();
 app.use(express.json({ limit: "256kb" }));
 
-app.get("/api/auth/me", (req, res) => res.json({ enabled: Boolean(AUTH), user: AUTH ? authedUser(req) : null }));
+app.get("/api/auth/me", (req, res) => {
+  const user = AUTH ? authedUser(req) : null;
+  res.json({ enabled: Boolean(AUTH), user, documents: user === DOCS_USER });
+});
 
 app.post("/api/auth/login", (req, res) => {
   if (!AUTH) return res.json({ user: null });
@@ -367,15 +375,15 @@ app.post("/api/auth/login", (req, res) => {
   if (failures && Date.now() - failures.since > LOGIN_WINDOW_MS) loginFailures.delete(ip);
   if ((loginFailures.get(ip)?.count || 0) >= 10) return res.status(429).json({ errors: ["Too many attempts. Try again in 15 minutes."] });
   const { user, password } = req.body || {};
-  const ok = String(user || "") === AUTH.user && passwordMatches(password);
+  const ok = AUTH.users.includes(String(user || "")) && passwordMatches(password);
   if (!ok) {
     const f = loginFailures.get(ip) || { count: 0, since: Date.now() };
     loginFailures.set(ip, { ...f, count: f.count + 1 });
     return res.status(401).json({ errors: ["Wrong username or password."] });
   }
   loginFailures.delete(ip);
-  res.setHeader("Set-Cookie", `${AUTH_COOKIE}=${authCookie(AUTH.user)}; ${COOKIE_FLAGS}; Max-Age=${AUTH_TTL_MS / 1000}`);
-  res.json({ user: AUTH.user });
+  res.setHeader("Set-Cookie", `${AUTH_COOKIE}=${authCookie(user)}; ${COOKIE_FLAGS}; Max-Age=${AUTH_TTL_MS / 1000}`);
+  res.json({ user });
 });
 
 app.post("/api/auth/logout", (req, res) => {
@@ -762,4 +770,87 @@ app.delete("/api/questions/:doc/comments/:id", (req, res) => {
   res.json({ comments: store.comments });
 });
 
-app.listen(PORT, HOST, () => console.log(`CPMS registration test app running at http://${HOST}:${PORT}`));
+// --- Working documents: files people upload (PDF / Word / Excel / images) kept in S3 under
+// cpms/wrkdocs/. Each key is "<upload time>_<original name>", so uploading the same name twice keeps
+// both; the list strips the prefix back off. S3's LastModified is the "added" time. Downloading
+// one file streams it as-is; several come back as one zip, streamed from S3.
+const DOCS_PREFIX = "cpms/wrkdocs/";
+const DOCS_TYPES = new Set(["pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "gif", "webp"]);
+const DOCS_MAX_BYTES = 100 * 1024 * 1024; // matches client_max_body_size in hosting/nginx-cpms.conf
+const docsUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: DOCS_MAX_BYTES, files: 20 } }).array("files");
+const docName = (key) => key.slice(DOCS_PREFIX.length).replace(/^[^_]*_/, "");
+const docExt = (name) => name.split(".").pop().toLowerCase();
+const isDocKey = (key) => typeof key === "string" && key.startsWith(DOCS_PREFIX) && !key.includes("..") && key.length > DOCS_PREFIX.length;
+// Only DOCS_USER may use these routes (the page's link is hidden for everyone else too).
+app.use("/api/docs", (req, res, next) => {
+  if (AUTH && authedUser(req) === DOCS_USER) return next();
+  res.status(403).json({ errors: ["Documents are only available to the documents user."] });
+});
+const attachment = (name) => `attachment; filename="${name.replace(/[^\x20-\x7e]|"/g, "_")}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+
+app.get("/api/docs", async (req, res) => {
+  try {
+    const files = [];
+    let ContinuationToken;
+    do {
+      const page = await s3.send(new ListObjectsV2Command({ Bucket: BUCKET, Prefix: DOCS_PREFIX, ContinuationToken }));
+      for (const o of page.Contents || []) if (o.Key !== DOCS_PREFIX) files.push({ key: o.Key, name: docName(o.Key), size: o.Size, added: o.LastModified });
+      ContinuationToken = page.NextContinuationToken;
+    } while (ContinuationToken);
+    files.sort((a, b) => new Date(b.added) - new Date(a.added));
+    res.json({ files });
+  } catch (err) {
+    res.status(502).json({ errors: [`Couldn't list documents: ${err.message}`] });
+  }
+});
+
+app.post("/api/docs/upload", (req, res) => docsUpload(req, res, async (err) => {
+  if (err) return res.status(err.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({ errors: [err.code === "LIMIT_FILE_SIZE" ? "Each file must be 100 MB or less." : err.message] });
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ errors: ["Choose at least one file."] });
+  // multer reads names as latin1; browsers send UTF-8
+  for (const f of files) f.originalname = Buffer.from(f.originalname, "latin1").toString("utf8").replace(/[\/\\\x00-\x1f]/g, "_");
+  const rejected = files.filter((f) => !DOCS_TYPES.has(docExt(f.originalname))).map((f) => f.originalname);
+  if (rejected.length) return res.status(400).json({ errors: [`Not a PDF, Word, Excel or image file: ${rejected.join(", ")}`] });
+  try {
+    const stamp = new Date().toISOString().replace(/[-:.]/g, "");
+    await Promise.all(files.map((f, i) => s3.send(new PutObjectCommand({
+      Bucket: BUCKET, Key: `${DOCS_PREFIX}${stamp}-${i}_${f.originalname}`, Body: f.buffer,
+      ContentType: f.mimetype || "application/octet-stream",
+    }))));
+    res.json({ uploaded: files.map((f) => f.originalname) });
+  } catch (e) {
+    res.status(502).json({ errors: [`Upload to S3 failed: ${e.message}`] });
+  }
+}));
+
+// A plain form POST (keys=…&keys=…), so the browser handles the download itself — no buffering in the page.
+app.post("/api/docs/download", express.urlencoded({ extended: false, limit: "256kb" }), async (req, res) => {
+  const keys = [].concat(req.body.keys || []);
+  if (!keys.length || !keys.every(isDocKey)) return res.status(400).type("text").send("Pick one or more documents to download.");
+  try {
+    if (keys.length === 1) {
+      const obj = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: keys[0] }));
+      res.set({ "Content-Type": obj.ContentType || "application/octet-stream", "Content-Length": obj.ContentLength, "Content-Disposition": attachment(docName(keys[0])) });
+      return obj.Body.pipe(res);
+    }
+    const zip = archiver("zip", { zlib: { level: 1 } }); // most of these are already compressed
+    zip.on("error", () => res.destroy());
+    res.set({ "Content-Type": "application/zip", "Content-Disposition": attachment(`wrkdocs-${new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-")}.zip`) });
+    zip.pipe(res);
+    const used = new Map(); // two uploads with the same name -> "x.pdf", "x (2).pdf"
+    for (const key of keys) {
+      const obj = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
+      const name = docName(key);
+      const n = (used.get(name) || 0) + 1;
+      used.set(name, n);
+      zip.append(obj.Body, { name: n === 1 ? name : name.replace(/(\.[^.]*)?$/, ` (${n})$1`), date: obj.LastModified });
+    }
+    await zip.finalize();
+  } catch (e) {
+    if (res.headersSent) return res.destroy();
+    res.status(e.name === "NoSuchKey" ? 404 : 502).type("text").send(e.name === "NoSuchKey" ? "That document no longer exists." : `Download failed: ${e.message}`);
+  }
+});
+
+app.listen(PORT, HOST,() => console.log(`CPMS registration test app running at http://${HOST}:${PORT}`));

@@ -16,6 +16,12 @@
     <img src="vanguard-logo.svg" alt="Vanguard" class="logo-img" onerror="this.hidden = true; this.nextElementSibling.hidden = false">
     <span class="logo-word" hidden>Vanguard</span>
   </a>
+  <nav class="topbar-nav" aria-label="Tools">
+    <a href="#/documents" class="topbar-link" id="nav-documents" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 18v-6M9 15l3-3 3 3"/></svg>
+      <span>Documents</span>
+    </a>
+  </nav>
   <div class="topbar-title">
     <span>Consent &amp; Preference Management Service</span>
     <small>CPMS · test harness</small>
@@ -190,7 +196,36 @@
       </div>
     </section>
 
+    <!-- Documents header -->
+    <section class="hero" data-flow="documents" hidden>
+      <div class="hero-inner">
+        <span class="eyebrow">Documents</span>
+        <h1>Working documents</h1>
+        <p class="hero-lead">PDF, Word, Excel and image files, kept in S3 under <code>cpms/wrkdocs/</code>. Up to 100 MB per file.</p>
+      </div>
+    </section>
+
     <main class="wrap">
+      <!-- ===== Documents (S3 cpms/wrkdocs/) ===== -->
+      <div data-flow="documents" hidden>
+        <div class="card docs-upload">
+          <label class="dropzone" id="docs-drop">
+            <input type="file" id="docs-input" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg,.gif,.webp">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+            <b>Drop files here or click to choose</b>
+            <small>PDF, Word, Excel, CSV or images · up to 100 MB each</small>
+          </label>
+          <ul class="docs-progress" id="docs-progress"></ul>
+        </div>
+        <div class="card docs-list">
+          <div class="docs-head">
+            <h2>Files <span class="badge" id="docs-count" hidden></span></h2>
+            <button class="btn primary small" type="button" id="docs-download" disabled>Download</button>
+          </div>
+          <div id="docs-body"><p class="empty">Loading…</p></div>
+        </div>
+      </div>
+
       <!-- ===== Open questions (consent_fanout/<doc>.md) ===== -->
       <div data-flow="questions" hidden id="q-body"></div>
 

@@ -11,6 +11,7 @@ const SOURCE_LABEL = { event: "EMO", account: "CL6" };
 // Per-flow state, so switching flows keeps each one's last send and result.
 const state = Object.fromEntries(FLOWS.map((f) => [f, { sent: null, result: null, status: "idle", error: null, pollToken: 0 }]));
 let flow = "event";
+let canDocs = false; // only the documents user (cpms1) gets the Documents page
 let tab = "form";
 let pending = null; // { flow, event } shown in the modal
 
@@ -42,12 +43,12 @@ async function loadConfig() {
 }
 
 // ---------- routing: #/event, #/account, #/unsubscribe[?ref=…], #/oneclick, #/preferences[?localId=…], #/onetrust?token=…,
-// #/router/<doc>, #/questions/<doc>, #/connectors/<doc>, #/schematics/<id>
-const PAGES = [...FLOWS, "unsubscribe", "oneclick", "preferences", "onetrust", "router", "questions", "connectors", "schematics"];
+// #/router/<doc>, #/questions/<doc>, #/connectors/<doc>, #/schematics/<id>, #/documents
+const PAGES = [...FLOWS, "unsubscribe", "oneclick", "preferences", "onetrust", "router", "questions", "connectors", "schematics", "documents"];
 function route(e) {
   const [path, query = ""] = location.hash.replace(/^#\//, "").split("?");
   const [page, doc] = path.split("/");
-  flow = PAGES.includes(page) ? page : "event";
+  flow = PAGES.includes(page) && (page !== "documents" || canDocs) ? page : "event";
   document.querySelectorAll("[data-flow]").forEach((el) => {
     const flows = el.dataset.flow.split(" ");
     if (el.classList.contains("side-link")) el.classList.toggle("active", flows.includes(flow) && (!el.dataset.doc || el.dataset.doc === doc));
@@ -56,6 +57,8 @@ function route(e) {
   // every sidebar section starts closed; after that, navigating opens the section of the page
   // you're on, so the active link shows
   if (e) document.querySelector(".side-link.active")?.closest("details.side-group")?.setAttribute("open", "");
+  $("nav-documents").classList.toggle("active", flow === "documents");
+  if (flow === "documents") return openDocuments();
   if (flow === "questions") return openQuestions(doc);
   if (flow === "connectors") return openConnector(doc);
   if (flow === "router") return openRouterDoc(doc);
@@ -856,6 +859,8 @@ $("q-body").addEventListener("submit", async (e) => {
 // App login (only when the server has one configured): show who's signed in and a way out.
 async function loadAuth() {
   const me = await API("/api/auth/me");
+  canDocs = me.documents;
+  $("nav-documents").hidden = !canDocs;
   if (!me.enabled) return;
   $("app-signout").hidden = false;
   $("app-signout").title = `Signed in as ${me.user}`;
@@ -864,6 +869,107 @@ $("app-signout").addEventListener("click", async () => {
   await API("/api/auth/logout", { method: "POST" });
   location.replace("/login.html");
 });
+
+// ---------- Documents (#/documents): upload to S3 cpms/wrkdocs/, list, download one or many (zip)
+const DOC_TYPES = ["pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "gif", "webp"];
+const DOC_MAX_BYTES = 100 * 1024 * 1024;
+let docs = [];
+const docSelected = new Set();
+const fmtSize = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+const fmtAdded = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+
+async function openDocuments() {
+  try {
+    ({ files: docs } = await API("/api/docs"));
+    [...docSelected].forEach((k) => docs.some((d) => d.key === k) || docSelected.delete(k));
+    renderDocuments();
+  } catch (err) {
+    $("docs-body").innerHTML = `<div class="callout err">${esc(err.message)}</div>`;
+  }
+}
+
+function renderDocuments() {
+  $("docs-count").hidden = !docs.length;
+  $("docs-count").textContent = docs.length;
+  $("docs-download").disabled = !docSelected.size;
+  $("docs-download").textContent = docSelected.size > 1 ? `Download ${docSelected.size} files (.zip)` : "Download";
+  if (!docs.length) return void ($("docs-body").innerHTML = `<p class="empty">No documents yet — upload some above.</p>`);
+  const all = docSelected.size === docs.length;
+  $("docs-body").innerHTML = `<div class="docs-table"><table>
+    <thead><tr><th class="sel"><input type="checkbox" id="docs-all" aria-label="Select all" ${all ? "checked" : ""}></th>
+      <th>Name</th><th class="num">Size</th><th class="num">Added</th></tr></thead>
+    <tbody>${docs.map((d) => `<tr>
+      <td class="sel"><input type="checkbox" data-key="${esc(d.key).replace(/"/g, "&quot;")}" aria-label="Select ${esc(d.name)}" ${docSelected.has(d.key) ? "checked" : ""}></td>
+      <td class="name"><span class="ext">${esc(d.name.split(".").pop())}</span>${esc(d.name)}</td>
+      <td class="num">${fmtSize(d.size)}</td><td class="num">${esc(fmtAdded(d.added))}</td></tr>`).join("")}</tbody>
+  </table></div>`;
+  $("docs-all").indeterminate = docSelected.size > 0 && !all;
+}
+
+$("docs-body").addEventListener("change", (e) => {
+  if (e.target.id === "docs-all") docs.forEach((d) => e.target.checked ? docSelected.add(d.key) : docSelected.delete(d.key));
+  else if (e.target.dataset.key) e.target.checked ? docSelected.add(e.target.dataset.key) : docSelected.delete(e.target.dataset.key);
+  renderDocuments();
+});
+// clicking anywhere on a row toggles it
+$("docs-body").addEventListener("click", (e) => {
+  const box = e.target.closest("tbody tr")?.querySelector("input[data-key]");
+  if (box && e.target !== box) { box.checked = !box.checked; box.dispatchEvent(new Event("change", { bubbles: true })); }
+});
+
+// A real form POST, so the browser streams the file/zip straight to disk.
+$("docs-download").addEventListener("click", () => {
+  const form = Object.assign(document.createElement("form"), { method: "POST", action: "/api/docs/download" });
+  docSelected.forEach((key) => form.append(Object.assign(document.createElement("input"), { type: "hidden", name: "keys", value: key })));
+  document.body.append(form);
+  form.submit();
+  form.remove();
+});
+
+// One request per file (each up to 100 MB, nginx's per-request limit), with a progress bar each.
+function uploadDoc(file) {
+  const li = document.createElement("li");
+  li.innerHTML = `<span>${esc(file.name)}</span><span class="pct">0%</span><span class="bar"><i style="width:0"></i></span>`;
+  $("docs-progress").prepend(li);
+  const done = (ok, text) => {
+    li.querySelector(".pct").className = ok ? "ok" : "err";
+    li.querySelector(ok ? ".ok" : ".err").textContent = text;
+    li.querySelector(".bar").classList.add(ok ? "ok" : "err");
+    li.querySelector(".bar i").style.width = "100%";
+  };
+  if (!DOC_TYPES.includes(file.name.split(".").pop().toLowerCase())) return Promise.resolve(done(false, "Not a PDF, Word, Excel or image file"));
+  if (file.size > DOC_MAX_BYTES) return Promise.resolve(done(false, "Over 100 MB"));
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    const body = new FormData();
+    body.append("files", file);
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const pct = Math.round((e.loaded / e.total) * 100);
+      li.querySelector(".pct").textContent = pct < 100 ? `${pct}%` : "Saving…";
+      li.querySelector(".bar i").style.width = `${pct}%`;
+    };
+    xhr.onload = () => {
+      let errors;
+      try { errors = JSON.parse(xhr.responseText).errors; } catch { errors = xhr.status === 413 ? ["Too large"] : null; }
+      xhr.status < 300 ? done(true, "Uploaded") : done(false, (errors || [`Failed (${xhr.status})`]).join("; "));
+      resolve();
+    };
+    xhr.onerror = () => { done(false, "Network error"); resolve(); };
+    xhr.open("POST", "/api/docs/upload");
+    xhr.send(body);
+  });
+}
+async function uploadDocs(files) {
+  if (!files.length) return;
+  await Promise.all([...files].map(uploadDoc));
+  openDocuments();
+}
+$("docs-input").addEventListener("change", (e) => { uploadDocs(e.target.files); e.target.value = ""; });
+const drop = $("docs-drop");
+["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => uploadDocs(e.dataTransfer.files));
 
 await loadAuth();
 await loadConfig();

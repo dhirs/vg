@@ -373,3 +373,39 @@ input:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px v
 .login-card { width: 100%; max-width: 400px; display: grid; gap: 4px; }
 .login-card .error { margin: 0; min-height: 1.2em; }
 .side-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+/* Header link to the Documents page */
+.topbar-nav { margin: 0 auto 0 28px; display: flex; gap: 4px; }
+.topbar-link { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 10px; color: var(--ink-2); text-decoration: none; font-weight: 600; font-size: 14px; }
+.topbar-link svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.topbar-link[hidden] { display: none; }
+.topbar-link:hover { background: var(--surface-2); }
+.topbar-link.active { background: var(--brand-soft); color: var(--brand); }
+@media (max-width: 560px) { .topbar-nav { margin-left: 8px; } .topbar-link span { display: none; } }
+
+/* Documents: upload area + file list */
+.docs-upload { margin-bottom: 16px; }
+.dropzone { display: grid; justify-items: center; gap: 4px; padding: 32px 16px; border: 2px dashed var(--line); border-radius: 12px; text-align: center; cursor: pointer; color: var(--ink-2); transition: border-color .15s, background .15s; }
+.dropzone input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.dropzone svg { width: 32px; height: 32px; fill: none; stroke: var(--muted); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; margin-bottom: 4px; }
+.dropzone small { color: var(--muted); font-size: 13px; }
+.dropzone:hover, .dropzone.over, .dropzone:focus-within { border-color: var(--brand); background: var(--brand-soft); }
+.docs-progress { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.docs-progress:not(:empty) { margin-top: 16px; }
+.docs-progress li { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 13.5px; }
+.docs-progress .bar { grid-column: 1 / -1; height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.docs-progress .bar i { display: block; height: 100%; background: var(--brand); transition: width .2s; }
+.docs-progress .ok { color: var(--ok); } .docs-progress .err { color: var(--err); } .docs-progress .bar.ok i { background: var(--ok); } .docs-progress .bar.err i { background: var(--err); }
+.docs-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.docs-head h2 { margin: 0; display: flex; align-items: center; gap: 8px; }
+.docs-table { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+.docs-table table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.docs-table th, .docs-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.docs-table th { background: var(--surface-2); font-weight: 600; font-size: 13px; color: var(--ink-2); }
+.docs-table tr:last-child td { border-bottom: 0; }
+.docs-table td.name { white-space: normal; overflow-wrap: anywhere; font-weight: 500; }
+.docs-table td.num, .docs-table th.num { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.docs-table .sel { width: 1%; }
+.docs-table input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--brand); cursor: pointer; }
+.docs-table tbody tr:hover { background: var(--surface-2); }
+.docs-table .ext { display: inline-block; min-width: 40px; margin-right: 8px; padding: 1px 6px; border-radius: 5px; font: 600 10.5px Inter, sans-serif; text-transform: uppercase; text-align: center; background: var(--surface-2); color: var(--muted); }
