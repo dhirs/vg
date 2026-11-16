@@ -43,6 +43,17 @@ so the settings had to be there before the code was deployed:
    /etc/nginx/sites-available/cpms`, `nginx -t`, reload); `/etc/nginx/cpms.htpasswd` deleted.
 
 **Follow-ups still open:**
+- **Document uploads over 1 MB fail with "Too large"** until the server's nginx site gets the
+  `client_max_body_size 100m;` line added to `hosting/nginx-cpms.conf` with the Documents page
+  (nginx's default is 1 MB). Run on the server (adds it after each `server_name` line, i.e. in
+  both the HTTPS block and certbot's redirect block):
+  ```bash
+  sudo cp /etc/nginx/sites-available/cpms /root/cpms-nginx.bak2
+  grep -q client_max_body_size /etc/nginx/sites-available/cpms || \
+    sudo sed -i '/server_name/a\    client_max_body_size 100m;' /etc/nginx/sites-available/cpms
+  sudo nginx -t && sudo systemctl reload nginx
+  ```
+  Then remove this item.
 - The workflow warns that `actions/checkout@v4` targets the deprecated Node 20 runtime;
   bump it when a newer major is out.
 
@@ -266,6 +277,10 @@ Test: GitHub → **Actions → Deploy web app → Run workflow**. It should end 
 
 - **Deploys:** push to `main` (changes under `send_to_cpms/web`, `schemas`, `taxonomy`, `docs`,
   `diagrams` or `consent_fanout`), or run the workflow by hand.
+- **nginx changes are not deployed.** The Action only copies the app; `/etc/nginx/sites-available/cpms`
+  is the server's own copy (certbot edited it). When `hosting/nginx-cpms.conf` changes, make the
+  same change on the server by hand (don't copy the file over — it would drop the HTTPS block),
+  then `sudo nginx -t && sudo systemctl reload nginx`.
 - **Logs:** `sudo journalctl -u cpms-web -f`
 - **Restart:** `sudo systemctl restart cpms-web`
 - **Change the password:** edit the `AUTH_PASSWORD` line in `/etc/cpms/cpms-web.env`, restart
@@ -286,4 +301,5 @@ Test: GitHub → **Actions → Deploy web app → Run workflow**. It should end 
 | Action fails at "Copy files" | `DEPLOY_KNOWN_HOSTS` / `DEPLOY_SSH_KEY` / `DEPLOY_USER` secrets; `deploy` can write to `/opt/cpms/app` |
 | Action fails at "restart" with a sudo error | `/etc/sudoers.d/cpms-deploy` paths match `/usr/bin/systemctl` |
 | Registrations fail with AccessDenied | the server's IAM policy (region, account ID, bucket name) |
+| Document upload says "Too large" for a small file | nginx's 1 MB default: `grep client_max_body_size /etc/nginx/sites-available/cpms` should show `100m` in every `server` block |
 | Diagrams don't draw | the browser must reach `viewer.diagrams.net` (the page loads its viewer script from there) |
