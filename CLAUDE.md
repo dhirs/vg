@@ -117,7 +117,7 @@ by question, read live from the file, with comments saved to
 `consent_fanout/comments/<doc>.json`. To add a file, add its name to `QUESTION_DOCS` in
 `server.js` and a sidebar link in `public/index.html`.
 A **Documents** link in the header (shown only to the hardcoded login `cpms1`, which uses the
-same `AUTH_PASSWORD`; the server also refuses `/api/docs` to anyone else) opens `#/documents`: upload PDF / Word / Excel / CSV / image
+same `AUTH_PASSWORD`; the server also refuses `/api/docs` to anyone else) opens `#/documents`: upload PDF / Word / Excel / CSV / image / draw.io
 files (100 MB each) to S3 under `cpms/wrkdocs/`, list them with the date added, and download one
 or several (several come back as one zip).
 

@@ -775,7 +775,7 @@ app.delete("/api/questions/:doc/comments/:id", (req, res) => {
 // both; the list strips the prefix back off. S3's LastModified is the "added" time. Downloading
 // one file streams it as-is; several come back as one zip, streamed from S3.
 const DOCS_PREFIX = "cpms/wrkdocs/";
-const DOCS_TYPES = new Set(["pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "gif", "webp"]);
+const DOCS_TYPES = new Set(["pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "gif", "webp", "drawio"]);
 const DOCS_MAX_BYTES = 100 * 1024 * 1024; // matches client_max_body_size in hosting/nginx-cpms.conf
 const docsUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: DOCS_MAX_BYTES, files: 20 } }).array("files");
 const docName = (key) => key.slice(DOCS_PREFIX.length).replace(/^[^_]*_/, "");

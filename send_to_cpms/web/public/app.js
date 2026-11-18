@@ -871,7 +871,7 @@ $("app-signout").addEventListener("click", async () => {
 });
 
 // ---------- Documents (#/documents): upload to S3 cpms/wrkdocs/, list, download one or many (zip)
-const DOC_TYPES = ["pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "gif", "webp"];
+const DOC_TYPES = ["pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "gif", "webp", "drawio"];
 const DOC_MAX_BYTES = 100 * 1024 * 1024;
 const DOCS_PER_PAGE = 5;
 let docs = []; // newest first (the server sorts)
@@ -950,7 +950,7 @@ function uploadDoc(file) {
     li.querySelector(".bar").classList.add(ok ? "ok" : "err");
     li.querySelector(".bar i").style.width = "100%";
   };
-  if (!DOC_TYPES.includes(file.name.split(".").pop().toLowerCase())) return Promise.resolve(done(false, "Not a PDF, Word, Excel or image file"));
+  if (!DOC_TYPES.includes(file.name.split(".").pop().toLowerCase())) return Promise.resolve(done(false, "Not a PDF, Word, Excel, CSV, image or draw.io file"));
   if (file.size > DOC_MAX_BYTES) return Promise.resolve(done(false, "Over 100 MB"));
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
